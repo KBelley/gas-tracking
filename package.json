@@ -1,0 +1,13 @@
+{
+  "name": "gas-tracking",
+  "private": true,
+  "description": "Voice-first fill-up logger: offline phone app (docs/) + Apps Script backend (src/) writing to a Google Sheet",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "sync": "node scripts/sync-shared.mjs",
+    "serve": "node scripts/serve.mjs",
+    "serve:mock": "node scripts/serve.mjs --mock",
+    "icons": "node scripts/make-icons.mjs",
+    "push": "npm run sync && clasp push"
+  }
+}

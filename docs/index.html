@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f6feb">
+  <meta name="description" content="Log gas fill-ups by voice and track MPG in Google Sheets">
+  <title>Gas Log</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Gas Log</h1>
+      <div class="sub" id="status">&nbsp;</div>
+    </div>
+    <button class="icon-btn" id="openSettings" aria-label="Settings">⚙</button>
+  </header>
+  <button class="sync-badge" id="syncBadge" hidden></button>
+
+  <!-- Setup / settings -->
+  <section id="setup" hidden>
+    <div class="card">
+      <h2>Connect to your sheet</h2>
+      <p class="sub">The easiest way: in the Apps Script editor, run <code>phoneSetupLink</code> and open the link it prints on this phone. You can also paste the values here.</p>
+      <label for="apiUrl">Web app URL (ends in /exec)</label>
+      <input id="apiUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+      <label for="apiToken">Token</label>
+      <input id="apiToken" type="text" autocomplete="off" spellcheck="false">
+      <div id="setupMsg"></div>
+      <button id="saveSetup">Save and test</button>
+      <button class="secondary" id="closeSetup">Cancel</button>
+    </div>
+  </section>
+
+  <!-- Entry -->
+  <section id="entry" hidden>
+    <div class="mic-wrap">
+      <button class="mic" id="mic" aria-label="Speak the numbers">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+      </button>
+      <div class="transcript" id="transcript">Tap and say: <em>“48,213 miles, 11.2 gallons, 41.97”</em></div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div class="card">
+      <label for="odometer">Odometer</label>
+      <input id="odometer" type="number" inputmode="numeric" step="1" enterkeyhint="next">
+      <div class="row">
+        <div>
+          <label for="gallons">Gallons</label>
+          <input id="gallons" type="number" inputmode="decimal" step="0.001" enterkeyhint="next">
+        </div>
+        <div>
+          <label for="total">Total $</label>
+          <input id="total" type="number" inputmode="decimal" step="0.01" enterkeyhint="next">
+        </div>
+      </div>
+      <label for="price">$/gal <span class="hint">(filled in from gallons and total)</span></label>
+      <input id="price" type="number" inputmode="decimal" step="0.001" enterkeyhint="done">
+      <label class="toggle" for="full">Filled to full <input id="full" type="checkbox" checked></label>
+
+      <details class="more" id="more">
+        <summary>Photos, date and notes</summary>
+        <div class="shots">
+          <label class="shot" id="shot-odometer">
+            <span class="glyph">🚗</span>Odometer photo
+            <input type="file" accept="image/*" capture="environment" data-slot="odometer">
+          </label>
+          <label class="shot" id="shot-pump">
+            <span class="glyph">⛽</span>Pump photo
+            <input type="file" accept="image/*" capture="environment" data-slot="pump">
+          </label>
+        </div>
+        <button class="secondary-solid" id="read" disabled>Read numbers from photos</button>
+        <div class="meta" id="readby"></div>
+        <label for="date">Date</label>
+        <input id="date" type="datetime-local">
+        <label for="notes">Notes</label>
+        <textarea id="notes" placeholder="Station, trip, etc."></textarea>
+      </details>
+    </div>
+    <button id="save" disabled>Save fill-up</button>
+    <button class="secondary" id="clear">Clear</button>
+  </section>
+
+  <!-- Saved -->
+  <section id="saved" class="card center" hidden>
+    <div id="savedBig" class="big"></div>
+    <div id="savedDetail" class="sub"></div>
+    <div id="savedSync" class="sync-line"></div>
+    <button id="done">Done</button>
+  </section>
+</main>
+
+<script src="shared/parse.js"></script>
+<script src="shared/stats.js"></script>
+<script src="outbox.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
