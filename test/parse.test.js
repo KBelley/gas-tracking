@@ -1,11 +1,10 @@
-// Run with: node --test test/
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseOdometer_, parsePump_ } = require('../shared/parse.js');
+const { parseOdometer_, parsePump_, toCents_ } = require('../shared/parse.js');
 
 test('odometer: picks the total, not trip/range/temp/clock', () => {
-  const text = 'ODO 123,456 mi\nTRIP A 312.4\nRANGE 287 mi\n72°F\n10:42';
-  assert.strictEqual(parseOdometer_(text), 123456);
+  const text = 'ODO 280,500 km\nTRIP A 312.4\nRANGE 487 km\n12°C\n10:42';
+  assert.strictEqual(parseOdometer_(text), 280500);
 });
 
 test('odometer: no label, ignores decimals and short numbers', () => {
@@ -17,7 +16,7 @@ test('odometer: decimal trip value is not read as part of a whole number', () =>
 });
 
 test('odometer: space as thousands separator', () => {
-  assert.strictEqual(parseOdometer_('87 654'), 87654);
+  assert.strictEqual(parseOdometer_('280 500'), 280500);
 });
 
 test('odometer: nothing readable', () => {
@@ -25,31 +24,38 @@ test('odometer: nothing readable', () => {
   assert.strictEqual(parseOdometer_(''), null);
 });
 
+const PUMP = { litres: 45.198, cents_per_litre: 159.9, total: 72.27 };
+
 test('pump: labels on their own lines above the numbers', () => {
-  const text = 'TOTAL SALE\n$ 41.97\nGALLONS\n11.997\nPRICE PER GALLON\n3.499';
-  assert.deepStrictEqual(parsePump_(text), { gallons: 11.997, price_per_gallon: 3.499, total: 41.97 });
+  assert.deepStrictEqual(parsePump_('SALE\n$ 72.27\nLITRES\n45.198\nPRICE ¢/L\n159.9'), PUMP);
 });
 
 test('pump: labels on the same line', () => {
-  const text = 'SALE $ 52.10\nGALLONS 14.890\nPRICE/GAL 3.499';
-  assert.deepStrictEqual(parsePump_(text), { gallons: 14.89, price_per_gallon: 3.499, total: 52.1 });
+  assert.deepStrictEqual(parsePump_('TOTAL $ 72.27\nVOLUME L 45.198\nPRICE ¢/L 159.9'), PUMP);
+});
+
+test('pump: price shown in dollars per litre is converted to cents', () => {
+  assert.deepStrictEqual(parsePump_('TOTAL 72.27\nLITRES 45.198\n$/L 1.599'), PUMP);
 });
 
 test('pump: labels under the numbers falls back to the multiplication check', () => {
-  const text = '45.67\nSALE\n12.345\nGALLONS\n3.699\nPRICE PER GALLON';
-  assert.deepStrictEqual(parsePump_(text), { gallons: 12.345, price_per_gallon: 3.699, total: 45.67 });
+  assert.deepStrictEqual(parsePump_('72.27\nSALE\n45.198\nLITRES\n159.9\nPRICE'), PUMP);
 });
 
 test('pump: no labels at all, extra noise numbers', () => {
-  const text = 'PUMP 7\n38.42\n10.981\n3.499\nREGULAR 87\n0.10';
-  assert.deepStrictEqual(parsePump_(text), { gallons: 10.981, price_per_gallon: 3.499, total: 38.42 });
+  assert.deepStrictEqual(parsePump_('PUMP 7\n72.27\n45.198\n159.9\nREGULAR 87\n0.10'), PUMP);
 });
 
 test('pump: one value missing is filled from the other two', () => {
-  const text = 'GALLONS 10.000\nPRICE PER GALLON 3.459';
-  assert.deepStrictEqual(parsePump_(text), { gallons: 10, price_per_gallon: 3.459, total: 34.59 });
+  assert.deepStrictEqual(parsePump_('LITRES 40.000\nPRICE ¢/L 150.0'), { litres: 40, cents_per_litre: 150, total: 60 });
 });
 
 test('pump: unreadable', () => {
-  assert.deepStrictEqual(parsePump_('THANK YOU'), { gallons: null, price_per_gallon: null, total: null });
+  assert.deepStrictEqual(parsePump_('THANK YOU'), { litres: null, cents_per_litre: null, total: null });
+});
+
+test('price: dollars become cents, cents stay cents', () => {
+  assert.strictEqual(toCents_(1.599), 159.9);
+  assert.strictEqual(toCents_(159.9), 159.9);
+  assert.strictEqual(toCents_(null), null);
 });

@@ -1,7 +1,10 @@
 /**
  * Gas Tracker backend: a small JSON API that the phone app (docs/, hosted on
  * GitHub Pages) calls to save fill-ups to this spreadsheet and read photos.
- * Shared helpers parse.js (OCR/speech parsing) and stats.js (MPG math) are copied
+ * Units are metric: odometer in km, litres, price in cents per litre (as the pump shows
+ * it, e.g. 159.9), total in dollars, fuel economy in L/100 km.
+ *
+ * Shared helpers parse.js (OCR/speech parsing) and stats.js (fuel economy math) are copied
  * in from shared/ by `npm run sync`.
  *
  * Permissions (appsscript.json) are kept to the minimum:
@@ -24,19 +27,19 @@ var APP_URL = 'https://kbelley.github.io/gas-tracking/';
 var SHEET_NAME = 'Fill-ups';
 var SUMMARY_NAME = 'Summary';
 var FOLDER_NAME = 'Gas Tracker Photos';
-var HEADERS = ['Date', 'Odometer', 'Gallons', '$/gal', 'Total', 'Full?', 'Miles',
-  'MPG', '$/mile', 'Odometer photo', 'Pump photo', 'Notes', 'ID'];
-var COL = { date: 1, odometer: 2, gallons: 3, price: 4, total: 5, full: 6, miles: 7,
-  mpg: 8, perMile: 9, odoPhoto: 10, pumpPhoto: 11, notes: 12, id: 13 };
-var HISTORY_SIZE = 30; // recent entries sent to the phone for offline MPG
+var HEADERS = ['Date', 'Odometer (km)', 'Litres', '¢/L', 'Total', 'Full?', 'Distance (km)',
+  'L/100 km', '$/km', 'Odometer photo', 'Pump photo', 'Notes', 'ID'];
+var COL = { date: 1, odometer: 2, litres: 3, cents: 4, total: 5, full: 6, distance: 7,
+  economy: 8, perKm: 9, odoPhoto: 10, pumpPhoto: 11, notes: 12, id: 13 };
+var HISTORY_SIZE = 30; // recent entries sent to the phone for offline fuel economy
 
 // Input limits. Anything outside these is rejected rather than written to the sheet.
 var LIMITS = {
   requestBytes: 20 * 1024 * 1024, // two resized photos are ~1 MB; this leaves lots of room
   photoBytes: 8 * 1024 * 1024,
   odometer: [0, 2000000],
-  gallons: [0.01, 150],
-  price: [0.01, 50],
+  litres: [0.01, 500],
+  cents: [10, 1000], // cents per litre
   total: [0.01, 2000],
   notesLength: 500,
 };
@@ -49,10 +52,11 @@ var PROVIDER_LABELS = { ocr: 'OCR', gemini: 'Gemini', claude: 'Claude' };
 
 var VISION_PROMPT =
   'You are reading photos taken at a gas station to log a fill-up.\n' +
-  'The odometer photo shows a car dashboard. Report the ODOMETER total (not trip A/B, ' +
+  'The odometer photo shows a car dashboard. Report the ODOMETER total in km (not trip A/B, ' +
   'range, temperature or the clock) as a whole number.\n' +
-  'The pump photo shows a fuel pump display. Report the gallons pumped, the price per ' +
-  'gallon, and the total sale in dollars.\n' +
+  'The pump photo shows a fuel pump display. Report the litres pumped, the price per ' +
+  'litre in CENTS (e.g. 159.9, even if the pump shows 1.599 dollars), and the total sale ' +
+  'in dollars.\n' +
   'Return numbers only. Use null for any value you cannot read with confidence, or whose ' +
   'photo was not provided. Do not guess or calculate values that are not visible.';
 
@@ -106,7 +110,7 @@ function json_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/** Which reader is active, plus recent entries so the phone can work out MPG offline. */
+/** Which reader is active, plus recent entries so the phone can work out fuel economy offline. */
 function getStatus() {
   var entries = [];
   try {
@@ -120,7 +124,7 @@ function getStatus() {
     history: entries.slice(-HISTORY_SIZE).map(function (e) {
       return {
         date: e.date instanceof Date ? e.date.getTime() : null,
-        odometer: e.odometer, gallons: e.gallons, total: e.total, full: e.full,
+        odometer: e.odometer, litres: e.litres, total: e.total, full: e.full,
       };
     }),
   };
@@ -165,10 +169,10 @@ function extract(photos) {
 }
 
 /**
- * Saves a confirmed fill-up and returns the computed miles/MPG. Entries carry an ID
- * from the phone, and an ID that is already in the sheet is not saved again, so the
- * phone can safely retry a sync that timed out.
- * @param {Object} entry {id, date (ms), odometer, gallons, price_per_gallon, total, full,
+ * Saves a confirmed fill-up and returns the distance and fuel economy. Entries carry
+ * an ID from the phone, and an ID that is already in the sheet is not saved again, so
+ * the phone can safely retry a sync that timed out.
+ * @param {Object} entry {id, date (ms), odometer, litres, cents_per_litre, total, full,
  *     notes, photos: {odometer, pump}}
  */
 function saveEntry(entry) {
@@ -179,25 +183,23 @@ function saveEntry(entry) {
   try {
     var sheet = fillupsSheet_();
     if (e.id && idExists_(sheet, e.id)) {
-      return { duplicate: true, miles: '', mpg: '', perMile: '' };
+      return { duplicate: true, distance: '', economy: '', perKm: '' };
     }
     var entries = readEntries_(sheet);
-    var stats = computeStats_(entries, e.odometer, e.gallons, e.total, e.full);
+    var stats = computeStats_(entries, e.odometer, e.litres, e.total, e.full);
 
     var stamp = Utilities.formatDate(e.date, Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
     var odoLink = savePhoto_(entry.photos && entry.photos.odometer, stamp + ' odometer');
     var pumpLink = savePhoto_(entry.photos && entry.photos.pump, stamp + ' pump');
 
-    var row = [e.date, e.odometer, e.gallons, e.price, e.total, e.full, stats.miles, stats.mpg,
-      stats.perMile, odoLink, pumpLink, safeText_(e.notes), e.id];
-    var odometer = e.odometer;
-    var full = e.full;
+    var row = [e.date, e.odometer, e.litres, e.cents, e.total, e.full, stats.distance,
+      stats.economy, stats.perKm, odoLink, pumpLink, safeText_(e.notes), e.id];
     sheet.appendRow(row);
     var rowIndex = sheet.getLastRow();
-    sheet.getRange(rowIndex, COL.full).insertCheckboxes().setValue(full);
+    sheet.getRange(rowIndex, COL.full).insertCheckboxes().setValue(e.full);
 
-    // An entry older than existing ones changes the MPG of the fills after it.
-    var isLatest = entries.every(function (e) { return e.odometer < odometer; });
+    // An entry older than existing ones changes the fuel economy of the fills after it.
+    var isLatest = entries.every(function (x) { return x.odometer < e.odometer; });
     if (isLatest) sortByOdometer_(sheet);
     else recalculateAll();
     return stats;
@@ -213,12 +215,13 @@ function saveEntry(entry) {
 function validateEntry_(entry) {
   if (!entry || typeof entry !== 'object') throw new Error('Missing entry.');
   var odometer = inLimit_(toNumber_(entry.odometer), LIMITS.odometer, 'Odometer');
-  var gallons = inLimit_(toNumber_(entry.gallons), LIMITS.gallons, 'Gallons');
-  if (odometer == null || gallons == null) throw new Error('Odometer and gallons are required.');
-  var price = inLimit_(toNumber_(entry.price_per_gallon), LIMITS.price, 'Price per gallon');
+  var litres = inLimit_(toNumber_(entry.litres), LIMITS.litres, 'Litres');
+  if (odometer == null || litres == null) throw new Error('Odometer and litres are required.');
+  // Price is in cents per litre; a dollar price like 1.599 is converted to 159.9.
+  var cents = inLimit_(toCents_(toNumber_(entry.cents_per_litre)), LIMITS.cents, 'Price (¢/L)');
   var total = inLimit_(toNumber_(entry.total), LIMITS.total, 'Total');
-  if (total == null && price != null) total = Math.round(gallons * price * 100) / 100;
-  if (price == null && total != null) price = Math.round(total / gallons * 1000) / 1000;
+  if (total == null && cents != null) total = Math.round(litres * cents) / 100;
+  if (cents == null && total != null) cents = Math.round(total / litres * 1000) / 10;
 
   var date = entry.date == null ? new Date() : new Date(Number(entry.date));
   var earliest = new Date(2000, 0, 1).getTime();
@@ -234,8 +237,8 @@ function validateEntry_(entry) {
     id: id,
     date: date,
     odometer: Math.round(odometer),
-    gallons: gallons,
-    price: price,
+    litres: litres,
+    cents: cents,
     total: total,
     full: entry.full !== false,
     notes: String(entry.notes == null ? '' : entry.notes).slice(0, LIMITS.notesLength),
@@ -284,7 +287,7 @@ function setup() {
   sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd h:mm am/pm');
   sheet.getRange('B2:B').setNumberFormat('#,##0');
   sheet.getRange('C2:C').setNumberFormat('0.000');
-  sheet.getRange('D2:D').setNumberFormat('$0.000');
+  sheet.getRange('D2:D').setNumberFormat('0.0');
   sheet.getRange('E2:E').setNumberFormat('$#,##0.00');
   sheet.getRange('G2:G').setNumberFormat('#,##0');
   sheet.getRange('H2:H').setNumberFormat('0.0');
@@ -336,21 +339,22 @@ function setupSummary_(ss) {
   var f = "'" + SHEET_NAME + "'!";
   var rows = [
     ['Fill-ups', '=COUNT(' + f + 'B2:B)'],
-    ['Miles tracked', '=IFERROR(MAX(' + f + 'B2:B)-MIN(' + f + 'B2:B),0)'],
+    ['Distance tracked (km)', '=IFERROR(MAX(' + f + 'B2:B)-MIN(' + f + 'B2:B),0)'],
     ['Total spent', '=SUM(' + f + 'E2:E)'],
-    ['Total gallons', '=SUM(' + f + 'C2:C)'],
-    ['Average $/gal', '=IFERROR(SUM(' + f + 'E2:E)/SUM(' + f + 'C2:C),"")'],
-    ['Average MPG', '=IFERROR(AVERAGE(' + f + 'H2:H),"")'],
-    ['Best MPG', '=IFERROR(MAX(' + f + 'H2:H),"")'],
-    ['Worst MPG', '=IFERROR(MIN(' + f + 'H2:H),"")'],
+    ['Total litres', '=SUM(' + f + 'C2:C)'],
+    ['Average ¢/L', '=IFERROR(SUM(' + f + 'E2:E)/SUM(' + f + 'C2:C)*100,"")'],
+    ['Average L/100 km', '=IFERROR(AVERAGE(' + f + 'H2:H),"")'],
+    ['Best L/100 km (lowest)', '=IFERROR(MIN(' + f + 'H2:H),"")'],
+    ['Worst L/100 km (highest)', '=IFERROR(MAX(' + f + 'H2:H),"")'],
     ['Spent last 30 days', '=SUMIFS(' + f + 'E2:E,' + f + 'A2:A,">="&(TODAY()-30))'],
   ];
   sheet.clear();
   sheet.getRange(1, 1, rows.length, 2).setValues(rows);
   sheet.getRange(1, 1, rows.length, 1).setFontWeight('bold');
+  sheet.getRange('B2').setNumberFormat('#,##0');
   sheet.getRange('B3').setNumberFormat('$#,##0.00');
-  sheet.getRange('B4').setNumberFormat('0.0');
-  sheet.getRange('B5').setNumberFormat('$0.000');
+  sheet.getRange('B4').setNumberFormat('#,##0.0');
+  sheet.getRange('B5').setNumberFormat('0.0');
   sheet.getRange('B6:B8').setNumberFormat('0.0');
   sheet.getRange('B9').setNumberFormat('$#,##0.00');
 
@@ -358,13 +362,13 @@ function setupSummary_(ss) {
   sheet.getRange('D2').setFormula(
     '=IFERROR(QUERY(' + f + 'A2:E, "select year(A), month(A)+1, sum(E), sum(C) ' +
     'where A is not null group by year(A), month(A)+1 order by year(A) desc, month(A)+1 desc ' +
-    "label year(A) 'Year', month(A)+1 'Month', sum(E) 'Spent', sum(C) 'Gallons'\", 0), " +
+    "label year(A) 'Year', month(A)+1 'Month', sum(E) 'Spent', sum(C) 'Litres'\", 0), " +
     '"No fill-ups yet")');
   sheet.autoResizeColumns(1, 7);
 }
 
 // ---------------------------------------------------------------------------
-// Sheet helpers and MPG math
+// Sheet helpers
 // ---------------------------------------------------------------------------
 
 /** The bound sheet. With the currentonly scope this is the only sheet the script can open. */
@@ -385,7 +389,7 @@ function readEntries_(sheet) {
       return {
         date: r[COL.date - 1],
         odometer: r[COL.odometer - 1],
-        gallons: Number(r[COL.gallons - 1]) || 0,
+        litres: Number(r[COL.litres - 1]) || 0,
         total: Number(r[COL.total - 1]) || 0,
         full: r[COL.full - 1] !== false,
       };
@@ -399,10 +403,10 @@ function idExists_(sheet, id) {
     .some(function (r) { return String(r[0]) === id; });
 }
 
-// computeStats_ (the MPG math) lives in stats.js, shared with the phone app.
+// computeStats_ (the fuel economy math) lives in stats.js, shared with the phone app.
 
 /**
- * Recomputes Miles/MPG/$-per-mile for every row. Run it from the editor after
+ * Recomputes Distance, L/100 km and $/km for every row. Run it from the editor after
  * editing numbers in the sheet by hand or backfilling old fill-ups.
  */
 function recalculateAll() {
@@ -411,10 +415,10 @@ function recalculateAll() {
   var entries = readEntries_(sheet);
   if (!entries.length) return;
   var out = entries.map(function (e, i) {
-    var s = computeStats_(entries.slice(0, i), e.odometer, e.gallons, e.total, e.full);
-    return [s.miles, s.mpg, s.perMile];
+    var s = computeStats_(entries.slice(0, i), e.odometer, e.litres, e.total, e.full);
+    return [s.distance, s.economy, s.perKm];
   });
-  sheet.getRange(2, COL.miles, out.length, 3).setValues(out);
+  sheet.getRange(2, COL.distance, out.length, 3).setValues(out);
 }
 
 function sortByOdometer_(sheet) {
@@ -466,7 +470,7 @@ function driveFetch_(path) {
 
 // ---------------------------------------------------------------------------
 // Photo readers. Each takes {odometer, pump} (decoded images or null) and returns
-// {odometer, gallons, price_per_gallon, total} with null for anything unread.
+// {odometer, litres, cents_per_litre, total} with null for anything unread.
 // ---------------------------------------------------------------------------
 
 function extractWithOcr_(images) {
@@ -481,8 +485,8 @@ function extractWithOcr_(images) {
     var pumpText = ocr_(images.pump.blob);
     rawText.push('--- Pump ---\n' + pumpText);
     var pump = parsePump_(pumpText);
-    reading.gallons = pump.gallons;
-    reading.price_per_gallon = pump.price_per_gallon;
+    reading.litres = pump.litres;
+    reading.cents_per_litre = pump.cents_per_litre;
     reading.total = pump.total;
   }
   reading.rawText = rawText.join('\n\n');
@@ -530,11 +534,11 @@ function extractWithClaude_(images) {
           type: 'object',
           properties: {
             odometer: nullableNumber,
-            gallons: nullableNumber,
-            price_per_gallon: nullableNumber,
+            litres: nullableNumber,
+            cents_per_litre: nullableNumber,
             total: nullableNumber,
           },
-          required: ['odometer', 'gallons', 'price_per_gallon', 'total'],
+          required: ['odometer', 'litres', 'cents_per_litre', 'total'],
           additionalProperties: false,
         },
       },
@@ -588,7 +592,7 @@ function extractWithGemini_(images) {
   });
   parts.push({
     text: VISION_PROMPT + '\nRespond with JSON exactly like: ' +
-      '{"odometer": 123456, "gallons": 11.234, "price_per_gallon": 3.499, "total": 39.31}',
+      '{"odometer": 280500, "litres": 45.198, "cents_per_litre": 159.9, "total": 72.27}',
   });
 
   var res = UrlFetchApp.fetch(
@@ -628,13 +632,14 @@ function provider_() {
 }
 
 function emptyReading_() {
-  return { odometer: null, gallons: null, price_per_gallon: null, total: null };
+  return { odometer: null, litres: null, cents_per_litre: null, total: null };
 }
 
 function normalizeReading_(obj) {
   var r = emptyReading_();
   Object.keys(r).forEach(function (k) { r[k] = toNumber_(obj && obj[k]); });
   if (r.odometer != null) r.odometer = Math.round(r.odometer);
+  r.cents_per_litre = toCents_(r.cents_per_litre); // in case the AI answered in dollars
   return r;
 }
 

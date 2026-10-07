@@ -1,5 +1,5 @@
 {
-  "timeZone": "America/Chicago",
+  "timeZone": "America/Toronto",
   "runtimeVersion": "V8",
   "exceptionLogging": "STACKDRIVER",
   "dependencies": {

@@ -8,7 +8,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#1f6feb">
-  <meta name="description" content="Log gas fill-ups by voice and track MPG in Google Sheets">
+  <meta name="description" content="Log gas fill-ups by voice and track fuel economy in Google Sheets">
   <title>Gas Log</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
@@ -47,26 +47,26 @@
       <button class="mic" id="mic" aria-label="Speak the numbers">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
       </button>
-      <div class="transcript" id="transcript">Tap and say: <em>“48,213 miles, 11.2 gallons, 41.97”</em></div>
+      <div class="transcript" id="transcript">Tap and say: “280,500 km, 45.2 litres, 72.27”</div>
     </div>
 
     <div id="messages"></div>
 
     <div class="card">
-      <label for="odometer">Odometer</label>
+      <label for="odometer">Odometer (km)</label>
       <input id="odometer" type="number" inputmode="numeric" step="1" enterkeyhint="next">
       <div class="row">
         <div>
-          <label for="gallons">Gallons</label>
-          <input id="gallons" type="number" inputmode="decimal" step="0.001" enterkeyhint="next">
+          <label for="litres">Litres</label>
+          <input id="litres" type="number" inputmode="decimal" step="0.001" enterkeyhint="next">
         </div>
         <div>
           <label for="total">Total $</label>
           <input id="total" type="number" inputmode="decimal" step="0.01" enterkeyhint="next">
         </div>
       </div>
-      <label for="price">$/gal <span class="hint">(filled in from gallons and total)</span></label>
-      <input id="price" type="number" inputmode="decimal" step="0.001" enterkeyhint="done">
+      <label for="price">Price ¢/L <span class="hint">(filled in from litres and total)</span></label>
+      <input id="price" type="number" inputmode="decimal" step="0.1" enterkeyhint="done">
       <label class="toggle" for="full">Filled to full <input id="full" type="checkbox" checked></label>
 
       <details class="more" id="more">

@@ -2,7 +2,7 @@
 // the background (Chrome's Background Sync) when the connection comes back.
 importScripts('outbox.js');
 
-var CACHE = 'gas-log-v1';
+var CACHE = 'gas-log-v2';
 var ASSETS = [
   './', 'index.html', 'styles.css', 'app.js', 'outbox.js', 'shared/parse.js', 'shared/stats.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',

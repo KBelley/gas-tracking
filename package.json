@@ -9,5 +9,8 @@
     "serve:mock": "node scripts/serve.mjs --mock",
     "icons": "node scripts/make-icons.mjs",
     "push": "npm run sync && clasp push"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.4.1"
   }
 }

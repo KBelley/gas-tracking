@@ -1,10 +1,11 @@
 # Gas Log
 
-Log a fill-up by voice in about 10 seconds. Tap the mic and say *"48,213 miles, 11.2 gallons, 41.97"*, check the numbers, and tap Save. MPG shows up right away, and the entry goes into a Google Sheet.
+Log a fill-up by voice in about 10 seconds. Tap the mic and say *"280,500 km, 45.2 litres, 72.27"*, check the numbers, and tap Save. Fuel economy (L/100 km) shows up right away, and the entry goes into a Google Sheet.
 
+- **Metric:** the odometer is in km, fuel in litres, the price in cents per litre as Canadian pumps show it (159.9), and the total in dollars. Fuel economy is in L/100 km, where lower is better.
 - **Installable phone app.** It opens instantly and works **with no signal**: entries made offline wait on the phone and sync by themselves later.
 - **Voice first.** You can also type the numbers, or take optional photos of the odometer and pump. Photos can be read by OCR, Gemini or Claude, and are saved to Drive.
-- **Your data stays in your own Google Sheet,** with MPG, $/mile and a Summary tab.
+- **Your data stays in your own Google Sheet,** with L/100 km, $/km and a Summary tab.
 
 ```
 Phone app (docs/, GitHub Pages)  ──POST JSON──>  Apps Script (src/)  ──>  Google Sheet + Drive photos
@@ -18,14 +19,16 @@ Labels can come before or after each number, and the order doesn't matter:
 
 | You say | You get |
 |---|---|
-| "48,213 miles, 11.2 gallons, 41.97" | everything; $/gal is worked out from gallons and total |
-| "odometer 48213, gallons 11 point 2, total $41.97" | same |
-| "48213, 11.2, 41.97" | same (no labels: the big number is the odometer) |
-| "11.2 gallons at 3.49 a gallon" | gallons and price; the total is worked out |
+| "280,500 km, 45.2 litres, 72.27" | everything; ¢/L is worked out from litres and total |
+| "odometer 280500, litres 45 point 2, total $72.27" | same |
+| "280500, 45.2, 72.27" | same (no labels: the big number is the odometer) |
+| "45.2 litres at 159.9 a litre" (or "1.599 per litre", or "one fifty-nine point nine cents") | litres and price; the total is worked out |
 
-Missed something? Tap the mic again and say just that part, for example "12.3 gallons". You can also tap a box and type, or use your keyboard's mic, which works offline.
+Numbers can be said as words ("two hundred eighty thousand five hundred kilometres") or digit by digit ("two eight zero five zero zero").
 
-If you only topped off, untick **Filled to full**. MPG is measured between full tanks, so a partial fill's gallons count toward your next full fill.
+Missed something? Tap the mic again and say just that part, for example "45.2 litres". You can also tap a box and type, or use your keyboard's mic, which works offline. Typing a dollar price like 1.599 into the ¢/L box turns it into 159.9.
+
+If you only topped off, untick **Filled to full**. Fuel economy is measured between full tanks, so a partial fill's litres count toward your next full fill.
 
 ## Setup (one time)
 
@@ -107,11 +110,11 @@ No Gmail, Calendar, Contacts, or broader Drive, Docs or Sheets access. A test (`
 
 ## The sheet
 
-- **Fill-ups:** Date · Odometer · Gallons · $/gal · Total · Full? · Miles · MPG · $/mile · photo links · Notes · ID.
-  - Rows are kept in odometer order, and adding an older entry updates the MPG of the fill-ups after it.
+- **Fill-ups:** Date · Odometer (km) · Litres · ¢/L · Total · Full? · Distance (km) · L/100 km · $/km · photo links · Notes · ID.
+  - Rows are kept in odometer order, and adding an older entry updates the fuel economy of the fill-ups after it.
   - If you edit numbers by hand, run `recalculateAll`.
   - The ID column stops a retried sync from adding the same entry twice.
-- **Summary:** fill-up count, miles tracked, total spent, average $/gal, average/best/worst MPG, spending in the last 30 days, and spending by month.
+- **Summary:** fill-up count, distance tracked, total spent, total litres, average ¢/L, average/best/worst L/100 km, spending in the last 30 days, and spending and litres by month.
 
 ## Updating
 
@@ -123,7 +126,7 @@ No Gmail, Calendar, Contacts, or broader Drive, Docs or Sheets access. A test (`
 Port 3020 is this project's reserved dev port.
 
 ```
-npm test             # OCR, speech and MPG tests, plus a check that shared copies match
+npm test             # OCR, speech, fuel economy and security tests, plus a check that shared copies match
 npm run sync         # copy shared/*.js into src/ and docs/shared/ (edit shared/, never the copies)
 npm run serve        # app at http://localhost:3020/
 npm run serve:mock   # same, plus a fake API; prints a setup link (token "dev") so the

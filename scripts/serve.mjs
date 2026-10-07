@@ -36,14 +36,15 @@ function mockApi(req) {
   if (req.action === 'save') {
     const e = req.entry;
     if (rows.some((r) => r.id === e.id)) return { ok: true, result: { duplicate: true } };
-    const stats = computeStats_(rows, e.odometer, e.gallons, e.total, e.full);
-    rows.push({ id: e.id, date: e.date, odometer: e.odometer, gallons: e.gallons, total: e.total, full: e.full });
+    if (e.odometer == null || e.litres == null) return { ok: false, error: 'Odometer and litres are required.' };
+    const stats = computeStats_(rows, e.odometer, e.litres, e.total, e.full);
+    rows.push({ id: e.id, date: e.date, odometer: e.odometer, litres: e.litres, total: e.total, full: e.full });
     rows.sort((a, b) => a.odometer - b.odometer);
     console.log('[mock] saved', JSON.stringify({ ...e, photos: e.photos ? 'yes' : 'no' }), JSON.stringify(stats));
     return { ok: true, result: stats };
   }
   if (req.action === 'extract') {
-    return { ok: true, reading: { odometer: 48213, gallons: 11.2, price_per_gallon: 3.747, total: 41.97, readBy: 'Mock' } };
+    return { ok: true, reading: { odometer: 280500, litres: 45.198, cents_per_litre: 159.9, total: 72.27, readBy: 'Mock' } };
   }
   return { ok: false, error: 'unknown action' };
 }

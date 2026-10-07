@@ -1,7 +1,7 @@
 {
   "name": "Gas Log",
   "short_name": "Gas Log",
-  "description": "Log gas fill-ups by voice and track MPG in Google Sheets",
+  "description": "Log gas fill-ups by voice and track fuel economy in Google Sheets",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

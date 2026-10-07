@@ -1,34 +1,36 @@
 /**
- * MPG math, shared by the Apps Script backend and the phone app (so MPG shows
- * instantly, even offline). Edit in shared/ only; `npm run sync` copies it.
+ * Fuel economy math, shared by the Apps Script backend and the phone app (so it
+ * shows instantly, even offline). Edit in shared/ only; `npm run sync` copies it.
  */
 
 /**
- * Miles since the previous fill. MPG and $/mile only on full fills: miles since the
- * previous FULL fill divided by all gallons (and dollars) put in since then,
- * including this fill. Uses odometer order, so backfilled entries work too.
- * @param {Array<{odometer:number, gallons:number, total:number, full:boolean}>} entries
+ * Distance since the previous fill. Fuel economy (L/100 km) and $/km only on full
+ * fills: all litres (and dollars) put in since the previous FULL fill, including
+ * this one, over the km driven since then. Uses odometer order, so backfilled
+ * entries work too.
+ * @param {Array<{odometer:number, litres:number, total:number, full:boolean}>} entries
+ * @return {{distance: number|'', economy: number|'', perKm: number|''}}
  */
-function computeStats_(entries, odometer, gallons, total, full) {
+function computeStats_(entries, odometer, litres, total, full) {
   var earlier = entries
     .filter(function (e) { return e.odometer < odometer; })
     .sort(function (a, b) { return a.odometer - b.odometer; });
-  var stats = { miles: '', mpg: '', perMile: '' };
+  var stats = { distance: '', economy: '', perKm: '' };
   if (!earlier.length) return stats;
 
-  stats.miles = odometer - earlier[earlier.length - 1].odometer;
+  stats.distance = odometer - earlier[earlier.length - 1].odometer;
   if (!full) return stats;
 
-  var gallonsSince = gallons;
+  var litresSince = litres;
   var dollarsSince = total || 0;
   for (var i = earlier.length - 1; i >= 0; i--) {
     if (earlier[i].full) {
-      var miles = odometer - earlier[i].odometer;
-      stats.mpg = Math.round(miles / gallonsSince * 10) / 10;
-      stats.perMile = dollarsSince ? Math.round(dollarsSince / miles * 1000) / 1000 : '';
+      var km = odometer - earlier[i].odometer;
+      stats.economy = Math.round(litresSince / km * 100 * 10) / 10;
+      stats.perKm = dollarsSince ? Math.round(dollarsSince / km * 1000) / 1000 : '';
       return stats;
     }
-    gallonsSince += earlier[i].gallons || 0;
+    litresSince += earlier[i].litres || 0;
     dollarsSince += earlier[i].total || 0;
   }
   return stats; // no earlier full fill to measure from

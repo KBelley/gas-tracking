@@ -2,10 +2,12 @@
  * (computeStats_) and outbox.js (IndexedDB + syncing), loaded before this file. */
 (function () {
   var MAX_PHOTO_SIDE = 1400;
-  var FIELDS = ['odometer', 'gallons', 'total', 'price'];
+  // Metric: odometer in km, litres, price in cents per litre, total in dollars.
+  var FIELDS = ['odometer', 'litres', 'total', 'price'];
+  var EXAMPLE = '“280,500 km, 45.2 litres, 72.27”';
   var $ = function (id) { return document.getElementById(id); };
 
-  var sheetHistory = [];   // recent entries from the sheet: {odometer, gallons, total, full, date}
+  var sheetHistory = [];   // recent entries from the sheet: {odometer, litres, total, full, date}
   var pending = [];   // entries waiting in the outbox
   var photos = { odometer: null, pump: null };
   var notice = '';
@@ -82,14 +84,14 @@
   function allEntries() {
     var seen = {};
     return sheetHistory.concat(pending.map(toHistoryEntry)).filter(function (e) {
-      var k = e.odometer + '|' + e.gallons;
+      var k = e.odometer + '|' + e.litres;
       if (seen[k]) return false;
       return (seen[k] = true);
     });
   }
 
   function toHistoryEntry(p) {
-    return { odometer: p.odometer, gallons: p.gallons, total: p.total || 0, full: p.full, date: p.date };
+    return { odometer: p.odometer, litres: p.litres, total: p.total || 0, full: p.full, date: p.date };
   }
 
   function lastEntry() {
@@ -100,7 +102,7 @@
     var last = lastEntry();
     var parts = [];
     if (last) {
-      parts.push('Last: ' + last.odometer.toLocaleString() + ' mi' +
+      parts.push('Last: ' + last.odometer.toLocaleString() + ' km' +
         (last.date ? ' on ' + new Date(last.date).toLocaleDateString() : ''));
     } else {
       parts.push('No fill-ups yet');
@@ -255,7 +257,7 @@
 
   /** Fills fields from a reading, keeping anything it didn't hear. */
   function applyReading(r) {
-    var map = { odometer: r.odometer, gallons: r.gallons, total: r.total, price: r.price_per_gallon };
+    var map = { odometer: r.odometer, litres: r.litres, total: r.total, price: r.cents_per_litre };
     var filled = 0;
     FIELDS.forEach(function (id) {
       if (map[id] == null) return;
@@ -267,41 +269,48 @@
     });
     fillDerived();
     updateWarnings();
-    if (!filled) setTranscript('I didn\'t hear any numbers. Try “48,213 miles, 11.2 gallons, 41.97 dollars”.', false);
+    if (!filled) setTranscript('I didn\'t hear any numbers. Try ' + EXAMPLE + '.', false);
   }
 
-  /** With two of gallons / total / price known, works out the third. */
+  /** Price in cents per litre; a dollar price typed as 1.599 counts as 159.9. */
+  function cents() { return toCents_(num('price')); }
+
+  /** With two of litres / total / price known, works out the third. */
   function fillDerived() {
-    var g = num('gallons'), t = num('total'), p = num('price');
-    if (g && t && p == null) $('price').value = round(t / g, 3);
-    else if (g && p && t == null) $('total').value = round(g * p, 2);
-    else if (t && p && g == null) $('gallons').value = round(t / p, 3);
+    var l = num('litres'), t = num('total'), c = cents();
+    if (l && t && c == null) $('price').value = round(t / l * 100, 1);
+    else if (l && c && t == null) $('total').value = round(l * c / 100, 2);
+    else if (t && c && l == null) $('litres').value = round(t / c * 100, 3);
   }
 
   function updateWarnings() {
     var msgs = [];
     if (notice) msgs.push(['warn', notice]);
-    var odo = num('odometer'), g = num('gallons'), p = num('price'), t = num('total');
+    var odo = num('odometer'), l = num('litres'), c = cents(), t = num('total');
     var last = lastEntry();
-    ['odometer', 'gallons'].forEach(function (id) {
+    ['odometer', 'litres'].forEach(function (id) {
       $(id).classList.toggle('missing', $(id).dataset.touched === '1' && num(id) == null);
     });
     if (odo != null && last && odo <= last.odometer) {
-      msgs.push(['warn', 'Odometer is not above your last entry (' + last.odometer.toLocaleString() + ').']);
-    } else if (odo != null && last && odo - last.odometer > 1000) {
-      msgs.push(['warn', (odo - last.odometer).toLocaleString() + ' miles since your last entry. Is that right?']);
+      msgs.push(['warn', 'Odometer is not above your last entry (' + last.odometer.toLocaleString() + ' km).']);
+    } else if (odo != null && last && odo - last.odometer > 1500) {
+      msgs.push(['warn', (odo - last.odometer).toLocaleString() + ' km since your last entry. Is that right?']);
     }
-    if (g != null && p != null && t != null && Math.abs(g * p - t) > 0.05) {
-      msgs.push(['warn', 'Gallons × price = $' + (g * p).toFixed(2) + ', but the total says $' + t.toFixed(2) + '.']);
+    if (l != null && c != null && t != null && Math.abs(l * c / 100 - t) > 0.05) {
+      msgs.push(['warn', 'Litres × price = $' + (l * c / 100).toFixed(2) + ', but the total says $' + t.toFixed(2) + '.']);
     }
     $('messages').innerHTML = '';
     msgs.forEach(function (m) { message($('messages'), m[0], m[1], true); });
-    $('save').disabled = odo == null || g == null;
+    $('save').disabled = odo == null || l == null;
   }
 
   FIELDS.forEach(function (id) {
     $(id).addEventListener('input', function () { $(id).dataset.touched = '1'; updateWarnings(); });
-    $(id).addEventListener('change', function () { if (id !== 'price') fillDerived(); updateWarnings(); });
+    $(id).addEventListener('change', function () {
+      if (id === 'price' && num('price') != null && num('price') < 20) $('price').value = cents();
+      if (id !== 'price') fillDerived();
+      updateWarnings();
+    });
   });
 
   function resetForm() {
@@ -319,7 +328,7 @@
       box.querySelector('input').value = '';
     });
     setTranscript('', false);
-    $('transcript').innerHTML = 'Tap and say: <em>“48,213 miles, 11.2 gallons, 41.97”</em>';
+    $('transcript').textContent = 'Tap and say: ' + EXAMPLE;
     updateReadButton();
     updateWarnings();
   }
@@ -396,15 +405,15 @@
       createdAt: Date.now(),
       date: $('date').value ? new Date($('date').value).getTime() : Date.now(),
       odometer: num('odometer'),
-      gallons: num('gallons'),
-      price_per_gallon: num('price'),
+      litres: num('litres'),
+      cents_per_litre: cents(),
       total: num('total'),
       full: $('full').checked,
       notes: $('notes').value.trim(),
     };
     if (photos.odometer || photos.pump) entry.photos = photos;
-    // MPG right away from the same math the sheet uses, before anything is sent.
-    var stats = computeStats_(allEntries(), entry.odometer, entry.gallons, entry.total, entry.full);
+    // Fuel economy right away from the same math the sheet uses, before anything is sent.
+    var stats = computeStats_(allEntries(), entry.odometer, entry.litres, entry.total, entry.full);
     $('save').disabled = true;
 
     outboxPut(entry).then(function () {
@@ -427,12 +436,13 @@
   });
 
   function showSaved(stats, full) {
-    $('savedBig').textContent = stats.mpg !== '' ? stats.mpg + ' MPG' : 'Saved ✓';
+    $('savedBig').textContent = stats.economy !== '' ? stats.economy.toFixed(1) + ' L/100 km' : 'Saved ✓';
     var detail = [];
-    if (stats.miles !== '') detail.push(stats.miles.toLocaleString() + ' miles since last fill-up');
-    if (stats.perMile !== '') detail.push('$' + stats.perMile.toFixed(3) + ' per mile');
-    if (stats.mpg === '') {
-      detail.push(full ? 'MPG starts with your next full fill-up.' : 'Partial fill: it counts toward MPG at your next full fill-up.');
+    if (stats.distance !== '') detail.push(stats.distance.toLocaleString() + ' km since last fill-up');
+    if (stats.perKm !== '') detail.push('$' + stats.perKm.toFixed(3) + ' per km');
+    if (stats.economy === '') {
+      detail.push(full ? 'Fuel economy starts with your next full fill-up.' :
+        'Partial fill: it counts toward fuel economy at your next full fill-up.');
     }
     $('savedDetail').textContent = detail.join(' · ');
     show('saved');

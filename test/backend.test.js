@@ -56,15 +56,17 @@ test('text that would run as a formula is neutralized', () => {
 });
 
 test('entry validation', () => {
-  const good = { id: 'abc-12345', date: Date.now(), odometer: 50000, gallons: 12, total: 42, full: true, notes: 'x' };
+  const good = { id: 'abc-12345', date: Date.now(), odometer: 280500, litres: 40, total: 64, full: true, notes: 'x' };
   const e = ctx.validateEntry_(good);
-  assert.strictEqual(e.price, 3.5);
+  assert.strictEqual(e.cents, 160); // worked out from litres and total
+  assert.strictEqual(ctx.validateEntry_({ ...good, total: null, cents_per_litre: 159.9 }).total, 63.96);
+  assert.strictEqual(ctx.validateEntry_({ ...good, cents_per_litre: 1.599 }).cents, 159.9); // dollars → cents
   assert.strictEqual(ctx.validateEntry_({ ...good, notes: 'n'.repeat(5000) }).notes.length, 500);
 
   const bad = [
     null, 'string', {},
-    { ...good, odometer: -5 }, { ...good, odometer: 9e9 }, { ...good, gallons: 0 }, { ...good, gallons: 1e6 },
-    { ...good, total: 1e9 }, { ...good, price_per_gallon: 999 },
+    { ...good, odometer: -5 }, { ...good, odometer: 9e9 }, { ...good, litres: 0 }, { ...good, litres: 1e6 },
+    { ...good, total: 1e9 }, { ...good, cents_per_litre: 99999 },
     { ...good, date: 'garbage' }, { ...good, date: Date.now() + 30 * 864e5 }, { ...good, date: 0 },
     { ...good, id: '=HYPERLINK("x")' }, { ...good, id: 'short' }, { ...good, id: 'x'.repeat(100) },
   ];
