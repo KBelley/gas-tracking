@@ -25,6 +25,25 @@ const cases = [
     { odometer: null, gallons: 12.3, price_per_gallon: null, total: null }],
   ['nothing numeric', 'hello there',
     { odometer: null, gallons: null, price_per_gallon: null, total: null }],
+
+  // Spoken number words, digits said one at a time, and distance mistaken for money.
+  ...[
+    'two-hundred-eighty thousand five-hundred kilometers',
+    'two hundred eighty thousand five hundred kilometers',
+    'two hundred and eighty thousand five hundred kilometres',
+    'two eight zero five zero zero kilometers',
+    '2-8-0-5-0-0 kilometers',
+    '280-500 km',
+    '2 8 0 5 0 0 km',
+    '$280,500 kilometers',
+    '$280,500',
+  ].map((said) => [`odometer: "${said}"`, said, { odometer: 280500, gallons: null, price_per_gallon: null, total: null }]),
+  ['number words for everything', 'forty eight thousand two hundred thirteen miles eleven point two gallons forty one dollars ninety seven cents',
+    { odometer: 48213, gallons: 11.2, price_per_gallon: 3.747, total: 41.97 }],
+  ['digit-by-digit odometer with other values', 'four eight two one three miles 11.2 gallons $41.97',
+    { odometer: 48213, gallons: 11.2, price_per_gallon: 3.747, total: 41.97 }],
+  ['"oh" on its own is not a zero', 'oh I put in 12 gallons',
+    { odometer: null, gallons: 12, price_per_gallon: null, total: null }],
 ];
 
 for (const [name, input, expected] of cases) {

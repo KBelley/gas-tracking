@@ -159,14 +159,7 @@ function parseSpeech_(transcript) {
   var out = { odometer: null, gallons: null, price_per_gallon: null, total: null };
   if (!transcript) return out;
 
-  var text = String(transcript).toLowerCase()
-    .replace(/(\d)\s+point\s+(\d)/g, '$1.$2')
-    .replace(/(\d),(?=\d{3}\b)/g, '$1')
-    .replace(/(\d+)\s*dollars?\s*(?:and\s*)?(\d{1,2})\s*cents?/g, function (_, d, c) {
-      return d + '.' + (c.length === 1 ? '0' + c : c) + ' dollars';
-    })
-    .replace(/(\d+)\s*dollars?\s+(\d{2})\b(?!\s*(?:gal|mile|cent|\.\d))/g, '$1.$2 dollars')
-    .replace(/\$\s*(\d+(?:\.\d+)?)/g, '$1 dollars');
+  var text = normalizeSpeech_(transcript);
 
   var tokens = [];
   var re = /\d+(?:\.\d+)?/g;
@@ -190,6 +183,14 @@ function parseSpeech_(transcript) {
     else unlabeled.push(t);
   });
 
+  // A "total" far too big to be a fill-up is really the odometer (e.g. the speech
+  // engine wrote "$280,500" for a spoken distance).
+  if (out.odometer == null && out.total != null && out.total > PUMP_LIMITS.total[1] &&
+      Math.round(out.total) === out.total && out.total >= 1000) {
+    out.odometer = out.total;
+    out.total = null;
+  }
+
   // Unlabeled: a big whole number is the odometer, the rest fill pump slots.
   unlabeled = unlabeled.filter(function (t) {
     if (out.odometer == null && t.isInt && t.value >= 1000) {
@@ -206,6 +207,116 @@ function parseSpeech_(transcript) {
   else if (p != null && total != null && g == null) out.gallons = round_(total / p, 3);
   if (out.odometer != null) out.odometer = Math.round(out.odometer);
   return out;
+}
+
+/**
+ * Puts a transcript into a form the number matcher can read:
+ *   "two hundred eighty thousand five hundred"  → "280500"
+ *   "two eight zero five zero zero" / "2-8-0-5-0-0" / "280-500" → "280500"
+ *   "eleven point two" / "11 point 2"           → "11.2"
+ *   "280,500"                                   → "280500"
+ *   "$280,500 km"                               → "280500 km" (a distance, not money)
+ *   "$41.97" / "41 dollars and 97 cents"        → "41.97 dollars"
+ */
+function normalizeSpeech_(transcript) {
+  var text = String(transcript).toLowerCase()
+    .replace(/([a-z])-(?=[a-z])/g, '$1 '); // "eighty-five" → "eighty five"
+  text = wordsToDigits_(text);
+  return text
+    // Digits said one at a time come back joined by dashes or spaces: join them up.
+    .replace(/(?<![\d.,])\d+(?:\s*-\s*\d+)+(?![\d.])/g, function (m) { return m.replace(/[\s-]/g, ''); })
+    .replace(/(?<![\d.,])\d(?:\s+\d){3,}(?![\d.])/g, function (m) { return m.replace(/\s/g, ''); })
+    .replace(/(\d)\s+point\s+(\d)/g, '$1.$2')
+    .replace(/(\d),(?=\d{3}\b)/g, '$1')
+    // A dollar sign in front of a distance is the speech engine guessing wrong.
+    .replace(/\$\s*(\d+(?:\.\d+)?)(?=\s*(?:km\b|kilomet|mile|mi\b))/g, '$1')
+    .replace(/(\d+)\s*dollars?\s*(?:and\s*)?(\d{1,2})\s*cents?/g, function (_, d, c) {
+      return d + '.' + (c.length === 1 ? '0' + c : c) + ' dollars';
+    })
+    .replace(/(\d+)\s*dollars?\s+(\d{2})\b(?!\s*(?:gal|mile|km|kilomet|cent|\.\d))/g, '$1.$2 dollars')
+    .replace(/\$\s*(\d+(?:\.\d+)?)/g, '$1 dollars');
+}
+
+var NUMBER_WORDS = {
+  zero: 0, oh: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
+  nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40,
+  fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+var SCALE_WORDS = { hundred: 100, thousand: 1000, million: 1000000 };
+
+/**
+ * Replaces runs of number words with digits. A run of single digits ("two eight
+ * zero") is read digit by digit; anything else is read as one number ("two hundred
+ * eighty thousand five hundred"). "and" inside a number ("two hundred and five") is
+ * allowed. "oh" only counts as zero inside a digit-by-digit run.
+ */
+function wordsToDigits_(text) {
+  var words = text.split(/(\s+)/); // keep the spaces so the text can be rebuilt
+  var out = [];
+  var run = [];
+
+  function isNumberWord(w) { return NUMBER_WORDS.hasOwnProperty(w) || SCALE_WORDS.hasOwnProperty(w); }
+
+  function flush() {
+    if (!run.length) return;
+    var allDigits = run.every(function (w) { return NUMBER_WORDS.hasOwnProperty(w) && NUMBER_WORDS[w] < 10; });
+    if (allDigits && run.length > 1) {
+      out.push(run.map(function (w) { return NUMBER_WORDS[w]; }).join(''));
+    } else if (run.length === 1 && run[0] === 'oh') {
+      out.push('oh'); // just "oh", not a number
+    } else {
+      // "forty one ninety seven" is two numbers (41 97): a word that can't extend
+      // the last one (a second tens word, or anything after a units digit) starts a
+      // new number.
+      var groups = [];
+      var total = 0, current = 0, started = false;
+      run.forEach(function (w) {
+        if (SCALE_WORDS[w] === 100) {
+          current = (current || 1) * 100;
+        } else if (SCALE_WORDS[w]) {
+          total += (current || 1) * SCALE_WORDS[w];
+          current = 0;
+        } else {
+          var v = NUMBER_WORDS[w];
+          var below = current % 100;
+          if (started && below !== 0 && (v >= 10 || below % 10 !== 0)) {
+            groups.push(total + current);
+            total = 0;
+            current = 0;
+          }
+          current += v;
+        }
+        started = true;
+      });
+      groups.push(total + current);
+      out.push(groups.join(' '));
+    }
+    run = [];
+  }
+
+  for (var i = 0; i < words.length; i++) {
+    var w = words[i];
+    if (/^\s+$/.test(w)) {
+      if (!run.length) out.push(w);
+      continue;
+    }
+    var bare = w.replace(/[.,!?]+$/, '');
+    var trailing = w.slice(bare.length);
+    var next = (words[i + 2] || '').replace(/[.,!?]+$/, '');
+    if (isNumberWord(bare)) {
+      run.push(bare);
+      if (trailing) { flush(); out.push(trailing + ' '); }
+    } else if (bare === 'and' && run.length && isNumberWord(next) &&
+        SCALE_WORDS.hasOwnProperty(run[run.length - 1])) {
+      // "two hundred and five": the "and" is part of the number
+    } else {
+      if (run.length) { flush(); out.push(' '); }
+      out.push(w);
+    }
+  }
+  flush();
+  return out.join('').replace(/\s+/g, ' ').trim();
 }
 
 var SPEECH_LABELS = {
@@ -277,5 +388,8 @@ function assignPumpValues_(out, values) {
 
 // Lets Node load this file for tests; Apps Script and browsers ignore it.
 if (typeof module !== 'undefined') {
-  module.exports = { parseOdometer_: parseOdometer_, parsePump_: parsePump_, parseSpeech_: parseSpeech_ };
+  module.exports = {
+    parseOdometer_: parseOdometer_, parsePump_: parsePump_, parseSpeech_: parseSpeech_,
+    normalizeSpeech_: normalizeSpeech_,
+  };
 }
