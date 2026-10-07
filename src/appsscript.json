@@ -8,10 +8,14 @@
     ]
   },
   "oauthScopes": [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets.currentonly",
+    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "urlFetchWhitelist": [
+    "https://www.googleapis.com/drive/v3/files/",
+    "https://generativelanguage.googleapis.com/",
+    "https://api.anthropic.com/"
   ],
   "webapp": {
     "executeAs": "USER_DEPLOYING",

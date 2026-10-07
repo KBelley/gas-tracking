@@ -4,13 +4,20 @@
  * Shared helpers parse.js (OCR/speech parsing) and stats.js (MPG math) are copied
  * in from shared/ by `npm run sync`.
  *
+ * Permissions (appsscript.json) are kept to the minimum:
+ *   spreadsheets.currentonly  only the sheet this script is attached to, not your other sheets
+ *   drive.file                only files this script created (its photo folder, photos and
+ *                             temporary OCR docs), not the rest of your Drive
+ *   script.external_request   outgoing calls, limited by urlFetchWhitelist to the Drive API
+ *                             (OCR text, test photos), Gemini and Claude
+ *
  * Script Properties (Project Settings → Script Properties):
  *   APP_TOKEN          secret the phone app sends with every request (made by setup())
  *   PROVIDER           ocr | gemini | claude   photo reader (default: ocr)
  *   GEMINI_API_KEY     only needed for PROVIDER=gemini
  *   GEMINI_MODEL       optional, defaults to GEMINI_DEFAULT_MODEL
  *   ANTHROPIC_API_KEY  only needed for PROVIDER=claude
- *   SPREADSHEET_ID, FOLDER_ID  written by setup()
+ *   FOLDER_ID          written by setup()
  */
 
 var APP_URL = 'https://kbelley.github.io/gas-tracking/';
@@ -22,6 +29,19 @@ var HEADERS = ['Date', 'Odometer', 'Gallons', '$/gal', 'Total', 'Full?', 'Miles'
 var COL = { date: 1, odometer: 2, gallons: 3, price: 4, total: 5, full: 6, miles: 7,
   mpg: 8, perMile: 9, odoPhoto: 10, pumpPhoto: 11, notes: 12, id: 13 };
 var HISTORY_SIZE = 30; // recent entries sent to the phone for offline MPG
+
+// Input limits. Anything outside these is rejected rather than written to the sheet.
+var LIMITS = {
+  requestBytes: 20 * 1024 * 1024, // two resized photos are ~1 MB; this leaves lots of room
+  photoBytes: 8 * 1024 * 1024,
+  odometer: [0, 2000000],
+  gallons: [0.01, 150],
+  price: [0.01, 50],
+  total: [0.01, 2000],
+  notesLength: 500,
+};
+var PHOTO_TYPES = { 'image/jpeg': true, 'image/png': true, 'image/webp': true };
+var DRIVE_API = 'https://www.googleapis.com/drive/v3/files/';
 
 var CLAUDE_MODEL = 'claude-sonnet-5-5';
 var GEMINI_DEFAULT_MODEL = 'gemini-3.6-flash';
@@ -41,26 +61,44 @@ var VISION_PROMPT =
 // a CORS preflight that Apps Script can't answer) and gets {ok, ...} back.
 // ---------------------------------------------------------------------------
 
+// Says nothing about what this script is, so the URL alone reveals nothing.
 function doGet() {
-  return json_({ ok: true, app: 'gas-tracker', message: 'API is running. Use the phone app.' });
+  return ContentService.createTextOutput('');
 }
 
 function doPost(e) {
+  var body = (e && e.postData && e.postData.contents) || '';
+  // Checked before parsing, so a request without the token does no real work.
+  if (body.length > LIMITS.requestBytes) return json_({ ok: false, error: 'unauthorized' });
+  var req;
   try {
-    var req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    var token = PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
-    if (!token || req.token !== token) return json_({ ok: false, error: 'unauthorized' });
+    req = JSON.parse(body);
+  } catch (err) {
+    return json_({ ok: false, error: 'unauthorized' });
+  }
+  var token = PropertiesService.getScriptProperties().getProperty('APP_TOKEN');
+  if (!token || !req || !safeEquals_(String(req.token || ''), token)) {
+    return json_({ ok: false, error: 'unauthorized' });
+  }
 
+  try {
     switch (req.action) {
       case 'status': return json_({ ok: true, status: getStatus() });
       case 'extract': return json_({ ok: true, reading: extract(req.photos) });
       case 'save': return json_({ ok: true, result: saveEntry(req.entry) });
-      default: return json_({ ok: false, error: 'unknown action: ' + req.action });
+      default: return json_({ ok: false, error: 'unknown action' });
     }
   } catch (err) {
     console.error(err);
     return json_({ ok: false, error: err.message });
   }
+}
+
+/** Compares secrets in constant time, so response timing can't reveal a partial match. */
+function safeEquals_(a, b) {
+  var diff = a.length ^ b.length;
+  for (var i = 0; i < b.length; i++) diff |= (a.charCodeAt(i) || 0) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 function json_(obj) {
@@ -134,35 +172,26 @@ function extract(photos) {
  *     notes, photos: {odometer, pump}}
  */
 function saveEntry(entry) {
-  if (!entry) throw new Error('Missing entry.');
-  var odometer = toNumber_(entry.odometer);
-  var gallons = toNumber_(entry.gallons);
-  if (odometer == null || gallons == null) {
-    throw new Error('Odometer and gallons are required.');
-  }
-  var price = toNumber_(entry.price_per_gallon);
-  var total = toNumber_(entry.total);
-  if (total == null && price != null) total = Math.round(gallons * price * 100) / 100;
-  if (price == null && total != null) price = Math.round(total / gallons * 1000) / 1000;
-  var full = entry.full !== false;
-  var date = entry.date ? new Date(entry.date) : new Date();
+  var e = validateEntry_(entry);
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
     var sheet = fillupsSheet_();
-    if (entry.id && idExists_(sheet, String(entry.id))) {
+    if (e.id && idExists_(sheet, e.id)) {
       return { duplicate: true, miles: '', mpg: '', perMile: '' };
     }
     var entries = readEntries_(sheet);
-    var stats = computeStats_(entries, odometer, gallons, total, full);
+    var stats = computeStats_(entries, e.odometer, e.gallons, e.total, e.full);
 
-    var stamp = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
+    var stamp = Utilities.formatDate(e.date, Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
     var odoLink = savePhoto_(entry.photos && entry.photos.odometer, stamp + ' odometer');
     var pumpLink = savePhoto_(entry.photos && entry.photos.pump, stamp + ' pump');
 
-    var row = [date, odometer, gallons, price, total, full, stats.miles, stats.mpg,
-      stats.perMile, odoLink, pumpLink, entry.notes || '', entry.id || ''];
+    var row = [e.date, e.odometer, e.gallons, e.price, e.total, e.full, stats.miles, stats.mpg,
+      stats.perMile, odoLink, pumpLink, safeText_(e.notes), e.id];
+    var odometer = e.odometer;
+    var full = e.full;
     sheet.appendRow(row);
     var rowIndex = sheet.getLastRow();
     sheet.getRange(rowIndex, COL.full).insertCheckboxes().setValue(full);
@@ -177,6 +206,60 @@ function saveEntry(entry) {
   }
 }
 
+/**
+ * Checks and cleans an entry from the phone. Throws on anything missing, malformed or
+ * implausible instead of writing it to the sheet.
+ */
+function validateEntry_(entry) {
+  if (!entry || typeof entry !== 'object') throw new Error('Missing entry.');
+  var odometer = inLimit_(toNumber_(entry.odometer), LIMITS.odometer, 'Odometer');
+  var gallons = inLimit_(toNumber_(entry.gallons), LIMITS.gallons, 'Gallons');
+  if (odometer == null || gallons == null) throw new Error('Odometer and gallons are required.');
+  var price = inLimit_(toNumber_(entry.price_per_gallon), LIMITS.price, 'Price per gallon');
+  var total = inLimit_(toNumber_(entry.total), LIMITS.total, 'Total');
+  if (total == null && price != null) total = Math.round(gallons * price * 100) / 100;
+  if (price == null && total != null) price = Math.round(total / gallons * 1000) / 1000;
+
+  var date = entry.date == null ? new Date() : new Date(Number(entry.date));
+  var earliest = new Date(2000, 0, 1).getTime();
+  var latest = Date.now() + 2 * 24 * 60 * 60 * 1000; // allow for clock differences
+  if (isNaN(date.getTime()) || date.getTime() < earliest || date.getTime() > latest) {
+    throw new Error('Date is not valid.');
+  }
+
+  var id = entry.id == null ? '' : String(entry.id);
+  if (id && !/^[A-Za-z0-9-]{8,64}$/.test(id)) throw new Error('Entry ID is not valid.');
+
+  return {
+    id: id,
+    date: date,
+    odometer: Math.round(odometer),
+    gallons: gallons,
+    price: price,
+    total: total,
+    full: entry.full !== false,
+    notes: String(entry.notes == null ? '' : entry.notes).slice(0, LIMITS.notesLength),
+  };
+}
+
+function inLimit_(n, range, label) {
+  if (n == null) return null;
+  if (n < range[0] || n > range[1]) {
+    throw new Error(label + ' must be between ' + range[0] + ' and ' + range[1] + '.');
+  }
+  return n;
+}
+
+/**
+ * Makes text safe to put in a cell. Text starting with = + - @ (or a tab/CR, which
+ * spreadsheets strip) would otherwise run as a formula, which could fetch URLs or
+ * pull in other data. A leading apostrophe makes Sheets show it as plain text.
+ */
+function safeText_(text) {
+  var s = String(text == null ? '' : text).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
+
 // ---------------------------------------------------------------------------
 // One-time setup (run from the editor)
 // ---------------------------------------------------------------------------
@@ -184,8 +267,11 @@ function saveEntry(entry) {
 function setup() {
   var props = PropertiesService.getScriptProperties();
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (!ss) throw new Error('Run setup() from the Apps Script project bound to your sheet.');
-  props.setProperty('SPREADSHEET_ID', ss.getId());
+  if (!ss) {
+    throw new Error('Open your sheet and use Extensions → Apps Script, so the script is ' +
+      'attached to the sheet. Then run setup() again.');
+  }
+  props.deleteProperty('SPREADSHEET_ID'); // no longer used: the script only sees its own sheet
   if (!props.getProperty('PROVIDER')) props.setProperty('PROVIDER', 'ocr');
 
   var sheet = ss.getSheetByName(SHEET_NAME);
@@ -207,7 +293,8 @@ function setup() {
   setupSummary_(ss);
 
   if (!props.getProperty('FOLDER_ID') || !folderExists_(props.getProperty('FOLDER_ID'))) {
-    props.setProperty('FOLDER_ID', DriveApp.createFolder(FOLDER_NAME).getId());
+    var folder = Drive.Files.create({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' });
+    props.setProperty('FOLDER_ID', folder.id);
   }
   if (!props.getProperty('APP_TOKEN')) {
     props.setProperty('APP_TOKEN', Utilities.getUuid().replace(/-/g, '') +
@@ -280,10 +367,11 @@ function setupSummary_(ss) {
 // Sheet helpers and MPG math
 // ---------------------------------------------------------------------------
 
+/** The bound sheet. With the currentonly scope this is the only sheet the script can open. */
 function fillupsSheet_() {
-  var id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-  var ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss && ss.getSheetByName(SHEET_NAME);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw new Error('Script is not attached to a sheet. See README → Setup.');
+  var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found. Run setup() first.');
   return sheet;
 }
@@ -334,14 +422,20 @@ function sortByOdometer_(sheet) {
   if (last > 2) sheet.getRange(2, 1, last - 1, HEADERS.length).sort(COL.odometer);
 }
 
+// Drive access goes through the advanced Drive service, because it works with the
+// narrow drive.file scope. DriveApp would need access to your whole Drive.
+
 function savePhoto_(dataUrl, name) {
   var img = decodeDataUrl_(dataUrl);
   if (!img) return '';
   try {
     var folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
-    var folder = folderId ? DriveApp.getFolderById(folderId) : DriveApp.getRootFolder();
-    var file = folder.createFile(img.blob.setName(name + '.jpg'));
-    return '=HYPERLINK("' + file.getUrl() + '","photo")';
+    var meta = { name: name + extensionFor_(img.mimeType), mimeType: img.mimeType };
+    if (folderId) meta.parents = [folderId];
+    var file = Drive.Files.create(meta, img.blob, { fields: 'id' });
+    // Built from the file ID only, so nothing from the request ends up in the formula.
+    return '=HYPERLINK("https://drive.google.com/file/d/' + encodeURIComponent(file.id) +
+      '/view","photo")';
   } catch (e) {
     console.warn('Could not save photo: ' + e.message);
     return '';
@@ -350,10 +444,24 @@ function savePhoto_(dataUrl, name) {
 
 function folderExists_(id) {
   try {
-    return !DriveApp.getFolderById(id).isTrashed();
+    return !Drive.Files.get(id, { fields: 'trashed' }).trashed;
   } catch (e) {
     return false;
   }
+}
+
+function extensionFor_(mimeType) {
+  return { 'image/png': '.png', 'image/webp': '.webp' }[mimeType] || '.jpg';
+}
+
+/** Calls the Drive REST API directly, for the two things the advanced service can't do here. */
+function driveFetch_(path) {
+  var res = UrlFetchApp.fetch(DRIVE_API + path, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw new Error('Drive HTTP ' + res.getResponseCode());
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,15 +489,19 @@ function extractWithOcr_(images) {
   return reading;
 }
 
-/** OCR via Google Drive: convert the image to a temporary Google Doc and read its text. */
+/**
+ * OCR via Google Drive: turn the image into a temporary Google Doc, export its text and
+ * delete it. Exporting through the Drive API, rather than opening the Doc with
+ * DocumentApp, avoids needing access to all of your Google Docs.
+ */
 function ocr_(blob) {
   var file = Drive.Files.create(
-    { name: 'gas-tracker-ocr-temp', mimeType: MimeType.GOOGLE_DOCS },
+    { name: 'gas-tracker-ocr-temp', mimeType: 'application/vnd.google-apps.document' },
     blob,
-    { ocrLanguage: 'en' }
+    { ocrLanguage: 'en', fields: 'id' }
   );
   try {
-    return DocumentApp.openById(file.id).getBody().getText();
+    return driveFetch_(encodeURIComponent(file.id) + '/export?mimeType=text%2Fplain').getContentText();
   } finally {
     Drive.Files.remove(file.id);
   }
@@ -532,48 +644,75 @@ function toNumber_(v) {
   return isFinite(n) ? n : null;
 }
 
+/**
+ * Turns a photo sent as a data: URL into a blob. Only JPEG, PNG and WebP are accepted,
+ * up to LIMITS.photoBytes, and the file's first bytes must match the type it claims,
+ * so nothing other than an image can be saved to Drive or sent to an AI service.
+ */
 function decodeDataUrl_(dataUrl) {
   if (!dataUrl) return null;
-  var m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
-  if (!m) return null;
+  if (typeof dataUrl !== 'string') throw new Error('Photo is not valid.');
+  var m = /^data:([a-z]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!m || !PHOTO_TYPES[m[1]]) throw new Error('Photos must be JPEG, PNG or WebP.');
+  if (m[2].length * 3 / 4 > LIMITS.photoBytes) throw new Error('Photo is too large.');
   var bytes = Utilities.base64Decode(m[2]);
+  if (!looksLike_(bytes, m[1])) throw new Error('Photo is not valid.');
   return { mimeType: m[1], base64: m[2], blob: Utilities.newBlob(bytes, m[1], 'photo') };
 }
 
+/** Checks the file signature ("magic bytes") against the claimed image type. */
+function looksLike_(bytes, mimeType) {
+  var b = function (i) { return bytes[i] & 0xff; };
+  if (bytes.length < 12) return false;
+  if (mimeType === 'image/jpeg') return b(0) === 0xff && b(1) === 0xd8 && b(2) === 0xff;
+  if (mimeType === 'image/png') return b(0) === 0x89 && b(1) === 0x50 && b(2) === 0x4e && b(3) === 0x47;
+  if (mimeType === 'image/webp') {
+    return b(0) === 0x52 && b(1) === 0x49 && b(2) === 0x46 && b(3) === 0x46 && // RIFF
+      b(8) === 0x57 && b(9) === 0x45 && b(10) === 0x42 && b(11) === 0x50;       // WEBP
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
-// Editor test: put some of your old photos in a "test" folder inside the photos
-// folder (names containing "odo" are treated as odometer shots, the rest as pump
-// shots), then run this and check View → Logs. Runs every reader you have a key for.
+// Editor test: runs every photo reader you have a key for on the last 10 photos the
+// app saved, so you can compare their accuracy. Take a few photos with the app first
+// (from the "Photos, date and notes" section). Check the Execution log for results.
+// The script can only see photos it saved itself (drive.file scope), so photos you
+// upload to Drive by hand won't show up here.
 // ---------------------------------------------------------------------------
 
 function testReaders() {
   var props = PropertiesService.getScriptProperties();
-  var parent = DriveApp.getFolderById(props.getProperty('FOLDER_ID'));
-  var it = parent.getFoldersByName('test');
-  if (!it.hasNext()) throw new Error('Create a folder named "test" inside "' + FOLDER_NAME + '".');
-  var files = it.next().getFiles();
+  var folderId = props.getProperty('FOLDER_ID');
+  if (!folderId) throw new Error('Run setup() first.');
+  var list = Drive.Files.list({
+    q: "'" + folderId.replace(/'/g, '') + "' in parents and trashed = false and mimeType contains 'image/'",
+    orderBy: 'createdTime desc',
+    pageSize: 10,
+    fields: 'files(id,name,mimeType)',
+  });
+  var files = list.files || [];
+  if (!files.length) throw new Error('No photos yet. Save a fill-up with photos from the app first.');
   var readers = { OCR: extractWithOcr_ };
   if (props.getProperty('GEMINI_API_KEY')) readers.Gemini = extractWithGemini_;
   if (props.getProperty('ANTHROPIC_API_KEY')) readers.Claude = extractWithClaude_;
 
-  while (files.hasNext()) {
-    var file = files.next();
-    if (!/^image\//.test(file.getMimeType())) continue;
-    var blob = file.getBlob();
+  files.forEach(function (file) {
+    var blob = driveFetch_(encodeURIComponent(file.id) + '?alt=media').getBlob().setContentType(file.mimeType);
     var image = {
-      mimeType: blob.getContentType(),
+      mimeType: file.mimeType,
       base64: Utilities.base64Encode(blob.getBytes()),
       blob: blob,
     };
-    var isOdo = /odo/i.test(file.getName());
+    var isOdo = /odometer/i.test(file.name);
     var images = { odometer: isOdo ? image : null, pump: isOdo ? null : image };
     Object.keys(readers).forEach(function (name) {
       try {
         var r = readers[name](images);
-        console.log(file.getName() + ' [' + name + '] ' + JSON.stringify(r));
+        console.log(file.name + ' [' + name + '] ' + JSON.stringify(r));
       } catch (e) {
-        console.log(file.getName() + ' [' + name + '] ERROR ' + e.message);
+        console.log(file.name + ' [' + name + '] ERROR ' + e.message);
       }
     });
-  }
+  });
 }

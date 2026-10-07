@@ -26,7 +26,10 @@
       pending = r[3] || [];
       showStatus(r[2]);
       renderBadge();
-      if (!r[0]) return openSetup(true);
+      var cfg = r[0];
+      if (setupLinkError || !cfg || configProblem(cfg.api, cfg.token)) {
+        return openSetup(!cfg, setupLinkError);
+      }
       resetForm();
       show('entry');
       syncNow();
@@ -35,12 +38,38 @@
     window.addEventListener('offline', updateReadButton);
   }
 
-  /** The setup link looks like …/#api=<exec url>&token=<token>. */
+  /**
+   * The setup link looks like …/#api=<exec url>&token=<token>. It's removed from the
+   * address bar straight away so the token doesn't stay in history or get shared by
+   * accident. A link pointing anywhere other than an Apps Script web app is refused,
+   * so a look-alike link can't send your fill-ups to someone else's server.
+   */
   function takeSetupFromLink() {
     var params = new URLSearchParams(location.hash.slice(1));
-    if (!params.get('api') || !params.get('token')) return Promise.resolve();
+    if (!params.has('api') && !params.has('token')) return Promise.resolve();
     window.history.replaceState(null, '', location.pathname);
+    var problem = configProblem(params.get('api'), params.get('token'));
+    if (problem) {
+      setupLinkError = 'That setup link was not used: ' + problem;
+      return Promise.resolve();
+    }
     return kvSet('config', { api: params.get('api'), token: params.get('token') });
+  }
+
+  var setupLinkError = '';
+
+  /** Returns why an API URL / token pair is unacceptable, or '' if it's fine. */
+  function configProblem(api, token) {
+    var isLocalDev = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    var appsScript = /^https:\/\/script\.google\.com\/(?:a\/[A-Za-z0-9.-]+\/)?macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+    var localMock = new RegExp('^' + location.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/mock/exec$');
+    if (!api || !(appsScript.test(api) || (isLocalDev && localMock.test(api)))) {
+      return 'the web app URL must start with https://script.google.com/ and end with /exec.';
+    }
+    if (!token || !(/^[A-Za-z0-9]{32,128}$/.test(token) || (isLocalDev && token === 'dev'))) {
+      return 'the token doesn\'t look right. Copy it again from phoneSetupLink.';
+    }
+    return '';
   }
 
   function show(section) {
@@ -131,24 +160,27 @@
 
   // ------------------------------------------------------------------ settings
 
-  function openSetup(firstRun) {
+  function openSetup(firstRun, errorText) {
     kvGet('config').then(function (cfg) {
       $('apiUrl').value = (cfg && cfg.api) || '';
       $('apiToken').value = (cfg && cfg.token) || '';
       $('closeSetup').hidden = !!firstRun;
       $('setupMsg').innerHTML = '';
+      if (errorText) message($('setupMsg'), 'err', errorText);
       show('setup');
     });
   }
 
   $('openSettings').addEventListener('click', function () { openSetup(false); });
-  $('closeSetup').addEventListener('click', function () { show('entry'); });
+  $('closeSetup').addEventListener('click', function () {
+    resetForm();
+    show('entry');
+  });
   $('saveSetup').addEventListener('click', function () {
     var api = $('apiUrl').value.trim();
     var token = $('apiToken').value.trim();
-    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(api)) {
-      return message($('setupMsg'), 'err', 'The URL should start with https://script.google.com/ and end with /exec.');
-    }
+    var problem = configProblem(api, token);
+    if (problem) return message($('setupMsg'), 'err', problem.charAt(0).toUpperCase() + problem.slice(1));
     kvSet('config', { api: api, token: token }).then(function () {
       message($('setupMsg'), 'ok', 'Testing…');
       return callApi('status');
