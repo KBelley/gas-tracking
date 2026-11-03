@@ -33,7 +33,7 @@ var COL = { date: 1, odometer: 2, litres: 3, cents: 4, total: 5, full: 6, distan
   economy: 8, mpg: 9, perKm: 10, odoPhoto: 11, pumpPhoto: 12, notes: 13, id: 14 };
 // Earlier layouts had 13 columns and no MPG column after the fuel economy column.
 var OLD_LAYOUT_WIDTH = 13;
-var HISTORY_SIZE = 30; // recent entries sent to the phone for offline fuel economy
+var HISTORY_SIZE = 60; // recent fill-ups sent to the phone (History screen, offline math)
 
 // Input limits. Anything outside these is rejected rather than written to the sheet.
 var LIMITS = {
@@ -92,6 +92,7 @@ function doPost(e) {
       case 'status': return json_({ ok: true, status: getStatus() });
       case 'extract': return json_({ ok: true, reading: extract(req.photos) });
       case 'save': return json_({ ok: true, result: saveEntry(req.entry) });
+      case 'attachPhotos': return json_({ ok: true, result: attachPhotos(req.id, req.photos, req.replace === true) });
       default: return json_({ ok: false, error: 'unknown action' });
     }
   } catch (err) {
@@ -112,24 +113,106 @@ function json_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/** Which reader is active, plus recent entries so the phone can work out fuel economy offline. */
+/**
+ * Which reader is active, plus the most recent fill-ups (oldest first). The phone uses
+ * them to work out fuel economy offline and to show the History screen.
+ */
 function getStatus() {
-  var entries = [];
+  var history = [];
   try {
-    entries = readEntries_(fillupsSheet_());
+    history = readHistory_(fillupsSheet_());
   } catch (e) {
     // Not set up yet: return an empty history.
   }
-  entries.sort(function (a, b) { return a.odometer - b.odometer; });
   return {
     provider: PROVIDER_LABELS[provider_()] || provider_(),
-    history: entries.slice(-HISTORY_SIZE).map(function (e) {
-      return {
-        date: e.date instanceof Date ? e.date.getTime() : null,
-        odometer: e.odometer, litres: e.litres, total: e.total, full: e.full,
-      };
-    }),
+    history: history.slice(-HISTORY_SIZE),
   };
+}
+
+/** Every fill-up with everything the History screen shows, sorted by odometer. */
+function readHistory_(sheet) {
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var values = sheet.getRange(2, 1, last - 1, HEADERS.length).getValues();
+  var formulas = sheet.getRange(2, COL.odoPhoto, last - 1, 2).getFormulas();
+  var numOrNull = function (v) { return typeof v === 'number' ? v : null; };
+  var out = [];
+  values.forEach(function (r, i) {
+    if (typeof r[COL.odometer - 1] !== 'number') return;
+    var date = r[COL.date - 1];
+    out.push({
+      id: String(r[COL.id - 1] || ''),
+      date: date instanceof Date ? date.getTime() : null,
+      odometer: r[COL.odometer - 1],
+      litres: Number(r[COL.litres - 1]) || 0,
+      cents: numOrNull(r[COL.cents - 1]),
+      total: Number(r[COL.total - 1]) || 0,
+      full: r[COL.full - 1] !== false,
+      distance: numOrNull(r[COL.distance - 1]),
+      economy: numOrNull(r[COL.economy - 1]),
+      mpg: numOrNull(r[COL.mpg - 1]),
+      notes: String(r[COL.notes - 1] || ''),
+      odoPhoto: photoUrl_(formulas[i][0], r[COL.odoPhoto - 1]),
+      pumpPhoto: photoUrl_(formulas[i][1], r[COL.pumpPhoto - 1]),
+    });
+  });
+  return out.sort(function (a, b) { return a.odometer - b.odometer; });
+}
+
+/**
+ * The Google Drive link in a photo cell, whether it's the script's =HYPERLINK formula
+ * or a link pasted by hand. Only Drive links are passed to the phone.
+ */
+function photoUrl_(formula, value) {
+  var m = /https:\/\/(?:drive|docs)\.google\.com\/[^"\s]+/.exec(String(formula || '') + ' ' + String(value || ''));
+  return m ? m[0] : '';
+}
+
+/**
+ * Adds photos to a fill-up that's already in the sheet, found by its ID. A photo cell
+ * that already has something in it is left alone unless replace is true, so retrying
+ * after a dropped connection never adds the same photo twice.
+ * @return {{attached: string[], skipped: string[]}} which slots were filled or left alone
+ */
+function attachPhotos(id, photos, replace) {
+  id = String(id == null ? '' : id);
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) throw new Error('Entry ID is not valid.');
+  if (!photos || (!photos.odometer && !photos.pump)) throw new Error('No photos to add.');
+  // Check the photos before touching the sheet or Drive.
+  var images = { odometer: decodeDataUrl_(photos.odometer), pump: decodeDataUrl_(photos.pump) };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = fillupsSheet_();
+    var last = sheet.getLastRow();
+    var ids = last < 2 ? [] : sheet.getRange(2, COL.id, last - 1, 1).getValues();
+    var index = -1;
+    for (var i = 0; i < ids.length; i++) if (String(ids[i][0]) === id) { index = i; break; }
+    if (index < 0) throw new Error('That fill-up isn\'t in the sheet yet.');
+    var row = index + 2;
+
+    var date = sheet.getRange(row, COL.date).getValue();
+    var stamp = Utilities.formatDate(date instanceof Date ? date : new Date(),
+      Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
+    var result = { attached: [], skipped: [] };
+    [['odometer', COL.odoPhoto], ['pump', COL.pumpPhoto]].forEach(function (slot) {
+      if (!images[slot[0]]) return;
+      var cell = sheet.getRange(row, slot[1]);
+      if (!replace && (cell.getFormula() || cell.getValue() !== '')) {
+        result.skipped.push(slot[0]);
+        return;
+      }
+      var link = savePhoto_(photos[slot[0]], stamp + ' ' + slot[0]);
+      if (!link) throw new Error('Could not save the ' + slot[0] + ' photo to Drive.');
+      cell.setFormula(link);
+      result.attached.push(slot[0]);
+    });
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**

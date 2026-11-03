@@ -7,9 +7,11 @@
   var EXAMPLE = '“280,500 km, 45.2 litres, 72.27”';
   var $ = function (id) { return document.getElementById(id); };
 
-  var sheetHistory = [];   // recent entries from the sheet: {odometer, litres, total, full, date}
-  var pending = [];   // entries waiting in the outbox
-  var photos = { odometer: null, pump: null };
+  var sheetHistory = [];   // recent fill-ups from the sheet, oldest first (see getStatus in Code.js)
+  var pending = [];        // outbox: fill-ups and photo uploads waiting to sync
+  var photos = { odometer: null, pump: null };       // photos for the fill-up being entered
+  var attachPhotos = { odometer: null, pump: null }; // photos being added to a past fill-up
+  var attachTarget = null;                            // the past fill-up they're for
   var notice = '';
 
   // ------------------------------------------------------------------ startup
@@ -75,23 +77,34 @@
   }
 
   function show(section) {
-    ['setup', 'entry', 'saved'].forEach(function (s) { $(s).hidden = s !== section; });
+    ['setup', 'entry', 'saved', 'history', 'attach'].forEach(function (s) { $(s).hidden = s !== section; });
     window.scrollTo(0, 0);
   }
 
   // ------------------------------------------------------------------ status + sync
 
+  /** Fill-ups waiting in the outbox (not photo uploads). */
+  function pendingFillups() {
+    return pending.filter(function (p) { return p.kind !== 'attach'; });
+  }
+
+  /** Every known fill-up: the sheet's, plus ones still waiting to sync. */
   function allEntries() {
     var seen = {};
-    return sheetHistory.concat(pending.map(toHistoryEntry)).filter(function (e) {
-      var k = e.odometer + '|' + e.litres;
+    return sheetHistory.concat(pendingFillups().map(toHistoryEntry)).filter(function (e) {
+      var k = e.id || (e.odometer + '|' + e.litres);
       if (seen[k]) return false;
       return (seen[k] = true);
     });
   }
 
   function toHistoryEntry(p) {
-    return { odometer: p.odometer, litres: p.litres, total: p.total || 0, full: p.full, date: p.date };
+    return {
+      id: p.id, date: p.date, odometer: p.odometer, litres: p.litres, cents: p.cents_per_litre,
+      total: p.total || 0, full: p.full, notes: p.notes || '', pendingSync: true,
+      odoPhoto: '', pumpPhoto: '', hasOdoPhoto: !!(p.photos && p.photos.odometer),
+      hasPumpPhoto: !!(p.photos && p.photos.pump),
+    };
   }
 
   function lastEntry() {
@@ -138,7 +151,11 @@
   }
 
   function refreshPending() {
-    return outboxAll().then(function (items) { pending = items; renderBadge(); });
+    return outboxAll().then(function (items) {
+      pending = items;
+      renderBadge();
+      if (!$('history').hidden) renderHistory();
+    });
   }
 
   function refreshStatus() {
@@ -148,6 +165,7 @@
       kvSet('provider', json.status.provider);
       showStatus(json.status.provider);
       updateWarnings();
+      if (!$('history').hidden) renderHistory();
     }, function (err) {
       if (err.message === 'unauthorized') {
         renderBadge('token rejected; check settings');
@@ -322,11 +340,7 @@
     $('readby').textContent = '';
     notice = '';
     photos = { odometer: null, pump: null };
-    document.querySelectorAll('.shot').forEach(function (box) {
-      box.classList.remove('has-photo');
-      box.querySelectorAll('img, .tag').forEach(function (el) { el.remove(); });
-      box.querySelector('input').value = '';
-    });
+    clearShots('entry');
     setTranscript('', false);
     $('transcript').textContent = 'Tap and say: ' + EXAMPLE;
     updateReadButton();
@@ -337,24 +351,38 @@
 
   // ------------------------------------------------------------------ photos
 
+  // Photo tiles on the entry screen and the Add photos screen. data-target says which
+  // set of photos a tile belongs to.
   document.querySelectorAll('.shot input').forEach(function (input) {
     input.addEventListener('change', function () {
       var file = input.files && input.files[0];
       if (!file) return;
       var slot = input.dataset.slot;
+      var forAttach = input.dataset.target === 'attach';
       resizePhoto(file).then(function (dataUrl) {
-        photos[slot] = dataUrl;
-        var box = $('shot-' + slot);
+        (forAttach ? attachPhotos : photos)[slot] = dataUrl;
+        var box = input.closest('.shot');
         box.classList.add('has-photo');
         var img = box.querySelector('img') || box.appendChild(document.createElement('img'));
         img.src = dataUrl;
         var tag = box.querySelector('.tag') || box.appendChild(document.createElement('span'));
         tag.className = 'tag';
-        tag.textContent = '✓ tap to retake';
-        updateReadButton();
-      }).catch(function (e) { message($('messages'), 'err', e.message); });
+        tag.textContent = '✓ tap to change';
+        if (forAttach) updateAttachButtons();
+        else updateReadButton();
+      }).catch(function (e) { message($(forAttach ? 'attachMsg' : 'messages'), 'err', e.message); });
     });
   });
+
+  function clearShots(target) {
+    document.querySelectorAll('.shot input').forEach(function (input) {
+      if ((input.dataset.target || 'entry') !== target) return;
+      var box = input.closest('.shot');
+      box.classList.remove('has-photo');
+      box.querySelectorAll('img, .tag').forEach(function (el) { el.remove(); });
+      input.value = '';
+    });
+  }
 
   function updateReadButton() {
     var hasPhoto = !!(photos.odometer || photos.pump);
@@ -458,7 +486,220 @@
     }).catch(function () {});
   }
 
+  // ------------------------------------------------------------------ history
+
+  function openHistory() {
+    $('historyMsg').innerHTML = '';
+    renderHistory();
+    show('history');
+    if (navigator.onLine) refreshStatus();
+  }
+
+  $('openHistory').addEventListener('click', openHistory);
+  $('viewHistory').addEventListener('click', openHistory);
+  $('historyBack').addEventListener('click', function () { show('entry'); });
+
+  var photosAwaitingSync = null; // fill-up whose added photos are still on the phone
+
+  /** Newest first. Built from the cached sheet history plus anything waiting to sync, so it works offline. */
+  function renderHistory() {
+    // Photos that were waiting for signal have gone through (e.g. synced in the background).
+    if (photosAwaitingSync && !photoUploadFor(photosAwaitingSync)) {
+      photosAwaitingSync = null;
+      message($('historyMsg'), 'ok', 'Photos added to your sheet ✓');
+    }
+    var list = $('historyList');
+    list.innerHTML = '';
+    var entries = allEntries().slice().sort(function (a, b) { return b.odometer - a.odometer; });
+    entries.forEach(function (e) { list.appendChild(historyCard(e)); });
+    $('historyFoot').textContent = entries.length
+      ? 'Showing your latest ' + entries.length + ' fill-up' + (entries.length === 1 ? '' : 's') +
+        '. Everything is also in your Google Sheet.'
+      : 'No fill-ups yet.';
+  }
+
+  function historyCard(e) {
+    var card = el('div', 'card fill');
+    var top = card.appendChild(el('div', 'fill-top'));
+    top.appendChild(el('span', '', e.date ? new Date(e.date).toLocaleDateString(undefined,
+      { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'No date'));
+    top.appendChild(el('span', 'odo', e.odometer.toLocaleString() + ' km'));
+
+    var parts = [e.litres.toFixed(1) + ' L', '$' + e.total.toFixed(2)];
+    if (e.cents != null) parts.push(e.cents.toFixed(1) + ' ¢/L');
+    card.appendChild(el('div', 'fill-line', parts.join(' · ')));
+
+    // Fill-ups from the sheet carry their fuel economy; ones still on the phone get it worked out here.
+    var economy = e.economy, mpg = e.mpg;
+    if (e.pendingSync) {
+      var s = computeStats_(allEntries(), e.odometer, e.litres, e.total, e.full);
+      economy = s.economy === '' ? null : s.economy;
+      mpg = s.mpg === '' ? null : s.mpg;
+    }
+    card.appendChild(economy != null
+      ? el('div', 'fill-eco', economy.toFixed(1) + ' L/100 km · ' + mpg.toFixed(1) + ' MPG (US)')
+      : el('div', 'fill-eco none', e.full ? 'No earlier full fill-up to measure from' :
+        'Partial fill: counted at the next full fill-up'));
+    if (e.notes) card.appendChild(el('div', 'fill-notes', e.notes));
+
+    var foot = card.appendChild(el('div', 'fill-foot'));
+    if (e.pendingSync) foot.appendChild(el('span', 'pill', 'Waiting to sync'));
+    if (queuedPhotosFor(e.id)) foot.appendChild(el('span', 'pill', 'Photos waiting to sync'));
+    photoLink(foot, e.odoPhoto, e.hasOdoPhoto, 'Odometer photo');
+    photoLink(foot, e.pumpPhoto, e.hasPumpPhoto, 'Pump photo');
+    if (e.id) {
+      var hasBoth = (e.odoPhoto || e.hasOdoPhoto) && (e.pumpPhoto || e.hasPumpPhoto);
+      var btn = foot.appendChild(el('button', 'secondary-solid', hasBoth ? 'Replace photos' : 'Add photos'));
+      btn.addEventListener('click', function () { openAttach(e); });
+    }
+    return card;
+  }
+
+  function photoLink(parent, url, onPhone, label) {
+    if (url) {
+      var a = parent.appendChild(el('a', '', label + ' ↗'));
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+    } else if (onPhone) {
+      parent.appendChild(el('span', 'pill muted', label + ' attached'));
+    }
+  }
+
+  function queuedPhotosFor(id) {
+    return id && pending.some(function (p) { return p.kind === 'attach' && p.entryId === id; });
+  }
+
+  /** The outbox item carrying photos for this fill-up: an upload, or the fill-up itself if it hasn't synced. */
+  function photoUploadFor(id) {
+    return pending.filter(function (p) {
+      return (p.kind === 'attach' && p.entryId === id) || (p.kind !== 'attach' && p.id === id && p.photos);
+    })[0];
+  }
+
+  // ------------------------------------------------------------------ add photos to a past fill-up
+
+  function openAttach(entry) {
+    attachTarget = entry;
+    attachPhotos = { odometer: null, pump: null };
+    clearShots('attach');
+    var date = entry.date ? new Date(entry.date).toLocaleDateString(undefined,
+      { month: 'short', day: 'numeric', year: 'numeric' }) : 'Fill-up';
+    $('attachSummary').textContent = date + ' · ' + entry.odometer.toLocaleString() + ' km · ' +
+      entry.litres.toFixed(1) + ' L · $' + entry.total.toFixed(2);
+    var hasExisting = !!(entry.odoPhoto || entry.hasOdoPhoto || entry.pumpPhoto || entry.hasPumpPhoto);
+    $('attachReplaceRow').hidden = !hasExisting;
+    $('attachReplace').checked = false;
+    $('attachCompare').innerHTML = '';
+    $('attachMsg').innerHTML = '';
+    updateAttachButtons();
+    show('attach');
+  }
+
+  $('attachBack').addEventListener('click', openHistory);
+
+  function updateAttachButtons() {
+    var has = !!(attachPhotos.odometer || attachPhotos.pump);
+    $('attachSave').disabled = !has;
+    $('attachCheck').disabled = !has || !navigator.onLine;
+    $('attachCheck').textContent = has && !navigator.onLine
+      ? 'Checking the numbers needs signal' : 'Check numbers against photos';
+  }
+
+  window.addEventListener('online', updateAttachButtons);
+  window.addEventListener('offline', updateAttachButtons);
+
+  /** Reads the photos and shows them next to what was entered, so typos stand out. */
+  $('attachCheck').addEventListener('click', function () {
+    var btn = $('attachCheck');
+    btn.disabled = true;
+    btn.textContent = 'Reading photos…';
+    $('attachCompare').innerHTML = '';
+    callApi('extract', { photos: attachPhotos }).then(function (json) {
+      var r = json.reading;
+      var e = attachTarget;
+      var rows = [
+        ['Odometer (km)', e.odometer, r.odometer, 1],
+        ['Litres', e.litres, r.litres, 0.01],
+        ['Total $', e.total, r.total, 0.01],
+        ['¢/L', e.cents, r.cents_per_litre, 0.15],
+      ].filter(function (row) { return row[2] != null; });
+      if (!rows.length) {
+        message($('attachCompare'), 'warn', 'Couldn\'t read any numbers from these photos' +
+          (r.notice ? ' (' + r.notice + ')' : '') + '. You can still add them.');
+        return;
+      }
+      var table = el('table', 'compare');
+      var head = table.appendChild(el('tr'));
+      ['', 'Entered', 'In photo'].forEach(function (h) { head.appendChild(el('th', '', h)); });
+      var differs = 0;
+      rows.forEach(function (row) {
+        var bad = row[1] == null || Math.abs(row[1] - row[2]) >= row[3];
+        if (bad) differs++;
+        var tr = table.appendChild(el('tr'));
+        tr.appendChild(el('td', '', row[0]));
+        tr.appendChild(el('td', '', row[1] == null ? '—' : row[1].toLocaleString()));
+        tr.appendChild(el('td', bad ? 'bad' : '', row[2].toLocaleString() + (bad ? '' : ' ✓')));
+      });
+      $('attachCompare').appendChild(table);
+      $('attachCompare').appendChild(el('div', 'meta', (r.readBy && r.readBy !== 'none' ? 'Read by ' + r.readBy + '. ' : '') +
+        (differs ? 'If the photo is right, fix the number in the Fill-ups tab of your sheet.' : 'Everything matches.')));
+    }, function (err) {
+      message($('attachCompare'), 'err', 'Could not read the photos (' + err.message + ').');
+    }).then(updateAttachButtons);
+  });
+
+  $('attachSave').addEventListener('click', function () {
+    var e = attachTarget;
+    var replace = $('attachReplace').checked;
+    var clash = [['odometer', e.odoPhoto || e.hasOdoPhoto, 'an odometer'], ['pump', e.pumpPhoto || e.hasPumpPhoto, 'a pump']]
+      .filter(function (s) { return attachPhotos[s[0]] && s[1] && !replace; });
+    if (clash.length) {
+      return message($('attachMsg'), 'warn', 'This fill-up already has ' + clash[0][2] +
+        ' photo. Tick “Replace the photos already there” to swap it.');
+    }
+    var chosen = {};
+    ['odometer', 'pump'].forEach(function (k) { if (attachPhotos[k]) chosen[k] = attachPhotos[k]; });
+    $('attachSave').disabled = true;
+
+    // Still on the phone? Add the photos to that fill-up directly. Otherwise queue an upload.
+    var waiting = pendingFillups().filter(function (p) { return p.id === e.id; })[0];
+    var queued;
+    if (waiting) {
+      waiting.photos = Object.assign({}, waiting.photos || {}, chosen);
+      queued = outboxPut(waiting);
+    } else {
+      queued = outboxPut({ id: newId(), kind: 'attach', entryId: e.id, photos: chosen, replace: replace, createdAt: Date.now() });
+    }
+    queued.then(refreshPending).then(function () {
+      openHistory();
+      message($('historyMsg'), 'ok', navigator.onLine ? 'Adding the photos to your sheet…' :
+        'Photos saved on your phone. They\'ll be added when you have signal.');
+      registerBackgroundSync();
+      return syncNow();
+    }).then(function () {
+      var item = photoUploadFor(e.id);
+      photosAwaitingSync = null;
+      if (!item) message($('historyMsg'), 'ok', 'Photos added to your sheet ✓');
+      else if (item.lastError) message($('historyMsg'), 'err', 'The sheet didn\'t accept the photos: ' + item.lastError);
+      else {
+        photosAwaitingSync = e.id; // renderHistory says so once they go through
+        message($('historyMsg'), 'ok', 'Photos saved on your phone. They\'ll be added when you have signal.');
+      }
+    }).catch(function (err) {
+      message($('attachMsg'), 'err', 'Could not save the photos on this phone: ' + err.message);
+      $('attachSave').disabled = false;
+    });
+  });
+
   // ------------------------------------------------------------------ helpers
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
 
   function num(id) { var v = parseFloat($(id).value); return isFinite(v) ? v : null; }
   function round(n, places) { var f = Math.pow(10, places); return Math.round(n * f) / f; }

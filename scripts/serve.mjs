@@ -28,20 +28,46 @@ const types = {
 const { computeStats_ } = createRequire(import.meta.url)(join(projectRoot, 'shared', 'stats.js'));
 const rows = [];
 
+const fakePhotoUrl = (id, slot) => `https://drive.google.com/file/d/mock-${slot}-${id}/view`;
+
 function mockApi(req) {
   if (req.token !== 'dev') return { ok: false, error: 'unauthorized' };
   if (req.action === 'status') {
-    return { ok: true, status: { provider: 'Mock', history: rows.slice(-30) } };
+    // Same shape as readHistory_ in Code.js.
+    const history = rows.map((r, i) => {
+      const s = computeStats_(rows.slice(0, i), r.odometer, r.litres, r.total, r.full);
+      const n = (v) => (v === '' ? null : v);
+      return { ...r, distance: n(s.distance), economy: n(s.economy), mpg: n(s.mpg) };
+    });
+    return { ok: true, status: { provider: 'Mock', history: history.slice(-60) } };
   }
   if (req.action === 'save') {
     const e = req.entry;
     if (rows.some((r) => r.id === e.id)) return { ok: true, result: { duplicate: true } };
     if (e.odometer == null || e.litres == null) return { ok: false, error: 'Odometer and litres are required.' };
     const stats = computeStats_(rows, e.odometer, e.litres, e.total, e.full);
-    rows.push({ id: e.id, date: e.date, odometer: e.odometer, litres: e.litres, total: e.total, full: e.full });
+    rows.push({
+      id: e.id, date: e.date, odometer: e.odometer, litres: e.litres, cents: e.cents_per_litre ?? null,
+      total: e.total, full: e.full, notes: e.notes || '',
+      odoPhoto: e.photos?.odometer ? fakePhotoUrl(e.id, 'odometer') : '',
+      pumpPhoto: e.photos?.pump ? fakePhotoUrl(e.id, 'pump') : '',
+    });
     rows.sort((a, b) => a.odometer - b.odometer);
-    console.log('[mock] saved', JSON.stringify({ ...e, photos: e.photos ? 'yes' : 'no' }), JSON.stringify(stats));
+    console.log('[mock] saved', JSON.stringify({ ...e, photos: e.photos ? Object.keys(e.photos) : 'no' }), JSON.stringify(stats));
     return { ok: true, result: stats };
+  }
+  if (req.action === 'attachPhotos') {
+    const row = rows.find((r) => r.id === req.id);
+    if (!row) return { ok: false, error: 'That fill-up isn\'t in the sheet yet.' };
+    const result = { attached: [], skipped: [] };
+    for (const [slot, key] of [['odometer', 'odoPhoto'], ['pump', 'pumpPhoto']]) {
+      if (!req.photos?.[slot]) continue;
+      if (row[key] && !req.replace) { result.skipped.push(slot); continue; }
+      row[key] = fakePhotoUrl(row.id, slot);
+      result.attached.push(slot);
+    }
+    console.log('[mock] attachPhotos', req.id, JSON.stringify(result));
+    return { ok: true, result };
   }
   if (req.action === 'extract') {
     return { ok: true, reading: { odometer: 280500, litres: 45.198, cents_per_litre: 159.9, total: 72.27, readBy: 'Mock' } };

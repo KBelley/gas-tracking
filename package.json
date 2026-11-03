@@ -8,7 +8,8 @@
     "serve": "node scripts/serve.mjs",
     "serve:mock": "node scripts/serve.mjs --mock",
     "icons": "node scripts/make-icons.mjs",
-    "push": "npm run sync && clasp push"
+    "push": "npm run sync && clasp push",
+    "test:e2e": "node test/e2e/app.e2e.mjs"
   },
   "devDependencies": {
     "@google/clasp": "^3.4.1"

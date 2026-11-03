@@ -22,7 +22,12 @@
       <h1>Gas Log</h1>
       <div class="sub" id="status">&nbsp;</div>
     </div>
-    <button class="icon-btn" id="openSettings" aria-label="Settings">⚙</button>
+    <div class="header-actions">
+      <button class="icon-btn" id="openHistory" aria-label="History">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3Zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12Z"/></svg>
+      </button>
+      <button class="icon-btn" id="openSettings" aria-label="Settings">⚙</button>
+    </div>
   </header>
   <button class="sync-badge" id="syncBadge" hidden></button>
 
@@ -91,6 +96,7 @@
     </div>
     <button id="save" disabled>Save fill-up</button>
     <button class="secondary" id="clear">Clear</button>
+    <button class="secondary" id="viewHistory">History and adding photos later</button>
   </section>
 
   <!-- Saved -->
@@ -99,6 +105,44 @@
     <div id="savedDetail" class="sub"></div>
     <div id="savedSync" class="sync-line"></div>
     <button id="done">Done</button>
+  </section>
+
+  <!-- History -->
+  <section id="history" hidden>
+    <div class="section-head">
+      <h2>History</h2>
+      <button class="secondary inline" id="historyBack">New fill-up</button>
+    </div>
+    <div id="historyMsg"></div>
+    <div id="historyList"></div>
+    <p class="sub center" id="historyFoot"></p>
+  </section>
+
+  <!-- Add photos to a past fill-up -->
+  <section id="attach" hidden>
+    <div class="section-head">
+      <h2>Add photos</h2>
+      <button class="secondary inline" id="attachBack">Back</button>
+    </div>
+    <div class="card">
+      <div id="attachSummary"></div>
+      <p class="sub">Pick the photos from your gallery or take new ones.</p>
+      <div class="shots">
+        <label class="shot" id="attach-shot-odometer">
+          <span class="glyph">🚗</span>Odometer photo
+          <input type="file" accept="image/*" data-slot="odometer" data-target="attach">
+        </label>
+        <label class="shot" id="attach-shot-pump">
+          <span class="glyph">⛽</span>Pump photo
+          <input type="file" accept="image/*" data-slot="pump" data-target="attach">
+        </label>
+      </div>
+      <label class="toggle" for="attachReplace" id="attachReplaceRow" hidden>Replace the photos already there <input id="attachReplace" type="checkbox"></label>
+      <button class="secondary-solid" id="attachCheck" disabled>Check numbers against photos</button>
+      <div id="attachCompare"></div>
+      <div id="attachMsg"></div>
+    </div>
+    <button id="attachSave" disabled>Add photos</button>
   </section>
 </main>
 

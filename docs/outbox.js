@@ -68,10 +68,21 @@ function apiError_(message, fromServer) {
 var syncing_ = null;
 
 /**
- * Sends queued entries oldest first. Stops at the first network problem (try again
- * later); an entry the server rejects keeps its error and is skipped so it can't
- * block the rest. The server ignores IDs it already has, so retries are safe.
+ * Sends queued items oldest first, so photos added to a fill-up always go after the
+ * fill-up itself. Two kinds of item:
+ *   a fill-up                  {id, odometer, litres, …}
+ *   photos for a past fill-up  {id, kind: 'attach', entryId, photos, replace}
+ * Stops at the first network problem (try again later); an item the server rejects
+ * keeps its error and is skipped so it can't block the rest. Retries are safe: the
+ * server ignores fill-up IDs it already has, and won't fill a photo cell twice.
  */
+function sendItem_(item) {
+  if (item.kind === 'attach') {
+    return callApi('attachPhotos', { id: item.entryId, photos: item.photos, replace: !!item.replace });
+  }
+  return callApi('save', { entry: item });
+}
+
 function syncOutbox() {
   if (syncing_) return syncing_;
   syncing_ = outboxAll().then(function (items) {
@@ -81,7 +92,7 @@ function syncOutbox() {
     items.forEach(function (item) {
       chain = chain.then(function (keepGoing) {
         if (!keepGoing) return false;
-        return callApi('save', { entry: item }).then(function () {
+        return sendItem_(item).then(function () {
           synced++;
           return outboxDelete(item.id).then(function () { return true; });
         }, function (err) {

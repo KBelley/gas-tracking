@@ -30,6 +30,16 @@ Missed something? Tap the mic again and say just that part, for example "45.2 li
 
 If you only topped off, untick **Filled to full**. Fuel economy is measured between full tanks, so a partial fill's litres count toward your next full fill.
 
+## History and adding photos later
+
+Tap the clock icon at the top, or **History and adding photos later** under the Save button.
+
+- **History** lists your latest 60 fill-ups, newest first. Each one shows the date, km, litres, total, ¢/L, L/100 km and MPG (US), any notes, and links to its photos. It works offline: it's built from the copy saved on your phone, plus anything still waiting to sync.
+- **Forgot the photos?** Tap **Add photos** on that fill-up and pick them from your gallery, or take new ones.
+  - **Check numbers against photos** (needs signal) reads the photos and shows them next to what you entered. Anything that doesn't match is highlighted, so you can fix typos in the sheet.
+  - A photo already on the fill-up isn't overwritten unless you tick **Replace the photos already there**.
+  - With no signal, the photos wait on the phone and are added when you're back online, like a fill-up.
+
 ## Setup (one time)
 
 ### 1. The sheet and the backend (Apps Script)
@@ -128,7 +138,10 @@ No Gmail, Calendar, Contacts, or broader Drive, Docs or Sheets access. A test (`
 Port 3020 is this project's reserved dev port.
 
 ```
-npm test             # OCR, speech, fuel economy and security tests, plus a check that shared copies match
+npm test             # OCR, speech, fuel economy, photo and security tests, plus a check that shared copies match
+npm run test:e2e     # the whole app in headless Edge/Chrome against the fake API: voice entry, offline
+                     # saving and syncing, history, adding photos later, setup-link checks
+                     # (set SHOTS=<folder> to also save screenshots)
 npm run sync         # copy shared/*.js into src/ and docs/shared/ (edit shared/, never the copies)
 npm run serve        # app at http://localhost:3020/
 npm run serve:mock   # same, plus a fake API; prints a setup link (token "dev") so the

@@ -23,6 +23,7 @@ vm.createContext(ctx);
 for (const f of ['src/Code.js', 'src/stats.js', 'src/parse.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), ctx);
 }
+const plain = (x) => JSON.parse(JSON.stringify(x));
 const post = (obj) => JSON.parse(ctx.doPost({ postData: { contents: typeof obj === 'string' ? obj : JSON.stringify(obj) } }).text);
 
 test('requests without the right token are refused, revealing nothing', () => {
@@ -160,6 +161,69 @@ test('an older sheet layout is upgraded without moving data into the wrong colum
   ctx.ensureLayout_(sheet, false);
   assert.strictEqual(sheet.rows[0].length, headers.length);
   assert.strictEqual(recalculated, 1);
+});
+
+// A stand-in sheet for attachPhotos: cells hold {value, formula}, keyed by "row,col".
+function cellSheet(idsByRow) {
+  const cells = {};
+  const key = (r, c) => r + ',' + c;
+  const col = vm.runInContext('COL', ctx);
+  idsByRow.forEach((id, i) => { cells[key(i + 2, col.id)] = { value: id, formula: '' }; });
+  const get = (r, c) => cells[key(r, c)] || (cells[key(r, c)] = { value: '', formula: '' });
+  return {
+    cells, get,
+    getLastRow: () => idsByRow.length + 1,
+    getRange(r, c, nr, nc) {
+      if (nr) return { getValues: () => Array.from({ length: nr }, (_, i) => [get(r + i, c).value]) };
+      return {
+        getValue: () => get(r, c).value,
+        getFormula: () => get(r, c).formula,
+        setFormula(f) { get(r, c).formula = f; get(r, c).value = 'photo'; return this; },
+      };
+    },
+  };
+}
+
+test('adding photos to a past fill-up', () => {
+  const col = vm.runInContext('COL', ctx);
+  const jpeg = 'data:image/jpeg;base64,' + Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(20)]).toString('base64');
+  const sheet = cellSheet(['first-fill-0001', 'second-fill-002']);
+  let saved = 0;
+  ctx.LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
+  ctx.Session = { getScriptTimeZone: () => 'America/Toronto' };
+  ctx.Utilities.formatDate = () => '2026-11-03 0900';
+  vm.runInContext('fillupsSheet_ = function () { return __sheet; }; savePhoto_ = function () { __saved++; return \'=HYPERLINK("https://drive.google.com/file/d/new/view","photo")\'; }', Object.assign(ctx, { __sheet: sheet, __saved: 0 }));
+
+  // Fills the right row (the second fill-up is row 3).
+  assert.deepStrictEqual(plain(ctx.attachPhotos('second-fill-002', { odometer: jpeg, pump: jpeg }, false)),
+    { attached: ['odometer', 'pump'], skipped: [] });
+  assert.match(sheet.get(3, col.odoPhoto).formula, /drive\.google\.com/);
+  assert.strictEqual(sheet.get(2, col.odoPhoto).formula, '', 'other rows untouched');
+
+  // A retry doesn't add a second copy; replace does.
+  saved = vm.runInContext('__saved', ctx);
+  assert.deepStrictEqual(plain(ctx.attachPhotos('second-fill-002', { odometer: jpeg }, false)), { attached: [], skipped: ['odometer'] });
+  assert.strictEqual(vm.runInContext('__saved', ctx), saved, 'nothing saved to Drive on a skipped slot');
+  assert.deepStrictEqual(plain(ctx.attachPhotos('second-fill-002', { odometer: jpeg }, true)), { attached: ['odometer'], skipped: [] });
+
+  // A photo link pasted by hand counts as already having a photo.
+  sheet.get(2, col.pumpPhoto).value = 'https://drive.google.com/file/d/manual/view';
+  assert.deepStrictEqual(plain(ctx.attachPhotos('first-fill-0001', { pump: jpeg }, false)), { attached: [], skipped: ['pump'] });
+
+  assert.throws(() => ctx.attachPhotos('missing-fill-0003', { pump: jpeg }, false), /isn't in the sheet/);
+  assert.throws(() => ctx.attachPhotos('=HYPERLINK("x")', { pump: jpeg }, false), /not valid/);
+  assert.throws(() => ctx.attachPhotos('first-fill-0001', {}, false), /No photos/);
+  assert.throws(() => ctx.attachPhotos('first-fill-0001', { pump: 'data:text/html;base64,PGI+' }, false), /JPEG/);
+});
+
+test('photo links are read from the script\'s formula or a pasted link, Drive only', () => {
+  assert.strictEqual(ctx.photoUrl_('=HYPERLINK("https://drive.google.com/file/d/abc/view","photo")', 'photo'),
+    'https://drive.google.com/file/d/abc/view');
+  assert.strictEqual(ctx.photoUrl_('', 'https://drive.google.com/file/d/xyz/view?usp=sharing'),
+    'https://drive.google.com/file/d/xyz/view?usp=sharing');
+  assert.strictEqual(ctx.photoUrl_('', 'https://evil.example/photo.jpg'), '');
+  assert.strictEqual(ctx.photoUrl_('', 'javascript:alert(1)'), '');
+  assert.strictEqual(ctx.photoUrl_('', ''), '');
 });
 
 test('manifest asks only for narrow scopes', () => {
