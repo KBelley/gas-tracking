@@ -92,6 +92,76 @@ test('photos: only real JPEG/PNG/WebP of reasonable size', () => {
   }
 });
 
+test('column numbers match the header row', () => {
+  const headers = vm.runInContext('HEADERS', ctx);
+  const col = vm.runInContext('COL', ctx);
+  const expected = {
+    date: 'Date', odometer: 'Odometer (km)', litres: 'Litres', cents: '¢/L', total: 'Total',
+    full: 'Full?', distance: 'Distance (km)', economy: 'L/100 km', mpg: 'MPG (US)', perKm: '$/km',
+    odoPhoto: 'Odometer photo', pumpPhoto: 'Pump photo', notes: 'Notes', id: 'ID',
+  };
+  for (const [key, title] of Object.entries(expected)) assert.strictEqual(headers[col[key] - 1], title, key);
+  assert.strictEqual(headers.length, Object.keys(col).length);
+  // recalculateAll writes distance, economy, mpg, perKm as one block of 4 columns.
+  assert.deepStrictEqual([col.distance, col.economy, col.mpg, col.perKm], [7, 8, 9, 10]);
+});
+
+// A stand-in sheet: a 2-D array with just the methods ensureLayout_ uses.
+function fakeSheet(rows) {
+  const sheet = {
+    rows,
+    getLastColumn: () => Math.max(...rows.map((r) => r.length)),
+    getLastRow: () => rows.length,
+    getMaxRows: () => 100,
+    getParent: () => ({}),
+    setFrozenRows() {},
+    insertColumnAfter(c) { rows.forEach((r) => r.splice(c, 0, '')); },
+    getRange(r, c, nr = 1, nc = 1) {
+      return {
+        getValues: () => rows.slice(r - 1, r - 1 + nr).map((row) => {
+          const out = row.slice(c - 1, c - 1 + nc);
+          while (out.length < nc) out.push('');
+          return out;
+        }),
+        setValues(v) { v.forEach((vr, i) => vr.forEach((x, j) => { rows[r - 1 + i][c - 1 + j] = x; })); return this; },
+        setFontWeight() { return this; },
+        setNumberFormat() { return this; },
+      };
+    },
+  };
+  return sheet;
+}
+
+test('an older sheet layout is upgraded without moving data into the wrong columns', () => {
+  const oldUS = ['Date', 'Odometer', 'Gallons', '$/gal', 'Total', 'Full?', 'Miles', 'MPG', '$/mile',
+    'Odometer photo', 'Pump photo', 'Notes', 'ID'];
+  const row = ['2026-11-03', 280500, 45.2, 159.9, 72.27, true, '', '', '', '=HYPERLINK("o")', '=HYPERLINK("p")', 'first fill', 'abc-12345'];
+  const sheet = fakeSheet([oldUS.slice(), row.slice()]);
+  let recalculated = 0;
+  ctx.setupSummary_ = () => {};
+  ctx.recalculateAll = () => { recalculated++; };
+  ctx.layoutChecked_ = false;
+  vm.runInContext('layoutChecked_ = false', ctx);
+  ctx.ensureLayout_(sheet, false);
+
+  const headers = vm.runInContext('HEADERS', ctx);
+  const col = vm.runInContext('COL', ctx);
+  assert.deepStrictEqual(sheet.rows[0], [...headers]);
+  const data = sheet.rows[1];
+  assert.strictEqual(data[col.odometer - 1], 280500);
+  assert.strictEqual(data[col.litres - 1], 45.2);
+  assert.strictEqual(data[col.notes - 1], 'first fill');
+  assert.strictEqual(data[col.id - 1], 'abc-12345');
+  assert.strictEqual(data[col.pumpPhoto - 1], '=HYPERLINK("p")');
+  assert.strictEqual(recalculated, 1, 'computed columns are recalculated');
+
+  // Running again changes nothing (no second column inserted).
+  vm.runInContext('layoutChecked_ = false', ctx);
+  ctx.ensureLayout_(sheet, false);
+  assert.strictEqual(sheet.rows[0].length, headers.length);
+  assert.strictEqual(recalculated, 1);
+});
+
 test('manifest asks only for narrow scopes', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'appsscript.json'), 'utf8'));
   assert.deepStrictEqual(manifest.oauthScopes.sort(), [

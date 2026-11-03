@@ -5,7 +5,7 @@ Log a fill-up by voice in about 10 seconds. Tap the mic and say *"280,500 km, 45
 - **Metric:** the odometer is in km, fuel in litres, the price in cents per litre as Canadian pumps show it (159.9), and the total in dollars. Fuel economy is in L/100 km, where lower is better.
 - **Installable phone app.** It opens instantly and works **with no signal**: entries made offline wait on the phone and sync by themselves later.
 - **Voice first.** You can also type the numbers, or take optional photos of the odometer and pump. Photos can be read by OCR, Gemini or Claude, and are saved to Drive.
-- **Your data stays in your own Google Sheet,** with L/100 km, $/km and a Summary tab.
+- **Your data stays in your own Google Sheet,** with L/100 km, the MPG equivalent, $/km and a Summary tab.
 
 ```
 Phone app (docs/, GitHub Pages)  ──POST JSON──>  Apps Script (src/)  ──>  Google Sheet + Drive photos
@@ -110,11 +110,13 @@ No Gmail, Calendar, Contacts, or broader Drive, Docs or Sheets access. A test (`
 
 ## The sheet
 
-- **Fill-ups:** Date · Odometer (km) · Litres · ¢/L · Total · Full? · Distance (km) · L/100 km · $/km · photo links · Notes · ID.
+- **Fill-ups:** Date · Odometer (km) · Litres · ¢/L · Total · Full? · Distance (km) · L/100 km · MPG (US) · $/km · photo links · Notes · ID.
+  - MPG (US) is the same fuel economy converted to US miles per gallon (235.215 ÷ L/100 km).
   - Rows are kept in odometer order, and adding an older entry updates the fuel economy of the fill-ups after it.
   - If you edit numbers by hand, run `recalculateAll`.
   - The ID column stops a retried sync from adding the same entry twice.
-- **Summary:** fill-up count, distance tracked, total spent, total litres, average ¢/L, average/best/worst L/100 km, spending in the last 30 days, and spending and litres by month.
+  - A sheet made by an older version (gallons and miles, or without the MPG column) is upgraded automatically the next time the app syncs: headings are renamed, the MPG column is inserted, and every row is recalculated.
+- **Summary:** fill-up count, distance tracked, total spent, total litres, average ¢/L, average/best/worst L/100 km, average MPG (US), spending in the last 30 days, and spending and litres by month.
 
 ## Updating
 

@@ -439,6 +439,7 @@
     $('savedBig').textContent = stats.economy !== '' ? stats.economy.toFixed(1) + ' L/100 km' : 'Saved ✓';
     var detail = [];
     if (stats.distance !== '') detail.push(stats.distance.toLocaleString() + ' km since last fill-up');
+    if (stats.mpg !== '') detail.push(stats.mpg.toFixed(1) + ' MPG (US)');
     if (stats.perKm !== '') detail.push('$' + stats.perKm.toFixed(3) + ' per km');
     if (stats.economy === '') {
       detail.push(full ? 'Fuel economy starts with your next full fill-up.' :

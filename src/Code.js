@@ -28,9 +28,11 @@ var SHEET_NAME = 'Fill-ups';
 var SUMMARY_NAME = 'Summary';
 var FOLDER_NAME = 'Gas Tracker Photos';
 var HEADERS = ['Date', 'Odometer (km)', 'Litres', '¢/L', 'Total', 'Full?', 'Distance (km)',
-  'L/100 km', '$/km', 'Odometer photo', 'Pump photo', 'Notes', 'ID'];
+  'L/100 km', 'MPG (US)', '$/km', 'Odometer photo', 'Pump photo', 'Notes', 'ID'];
 var COL = { date: 1, odometer: 2, litres: 3, cents: 4, total: 5, full: 6, distance: 7,
-  economy: 8, perKm: 9, odoPhoto: 10, pumpPhoto: 11, notes: 12, id: 13 };
+  economy: 8, mpg: 9, perKm: 10, odoPhoto: 11, pumpPhoto: 12, notes: 13, id: 14 };
+// Earlier layouts had 13 columns and no MPG column after the fuel economy column.
+var OLD_LAYOUT_WIDTH = 13;
 var HISTORY_SIZE = 30; // recent entries sent to the phone for offline fuel economy
 
 // Input limits. Anything outside these is rejected rather than written to the sheet.
@@ -183,7 +185,7 @@ function saveEntry(entry) {
   try {
     var sheet = fillupsSheet_();
     if (e.id && idExists_(sheet, e.id)) {
-      return { duplicate: true, distance: '', economy: '', perKm: '' };
+      return { duplicate: true, distance: '', economy: '', mpg: '', perKm: '' };
     }
     var entries = readEntries_(sheet);
     var stats = computeStats_(entries, e.odometer, e.litres, e.total, e.full);
@@ -193,7 +195,7 @@ function saveEntry(entry) {
     var pumpLink = savePhoto_(entry.photos && entry.photos.pump, stamp + ' pump');
 
     var row = [e.date, e.odometer, e.litres, e.cents, e.total, e.full, stats.distance,
-      stats.economy, stats.perKm, odoLink, pumpLink, safeText_(e.notes), e.id];
+      stats.economy, stats.mpg, stats.perKm, odoLink, pumpLink, safeText_(e.notes), e.id];
     sheet.appendRow(row);
     var rowIndex = sheet.getLastRow();
     sheet.getRange(rowIndex, COL.full).insertCheckboxes().setValue(e.full);
@@ -282,18 +284,7 @@ function setup() {
     var first = ss.getSheets()[0];
     sheet = first.getLastRow() === 0 ? first.setName(SHEET_NAME) : ss.insertSheet(SHEET_NAME);
   }
-  sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]).setFontWeight('bold');
-  sheet.setFrozenRows(1);
-  sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd h:mm am/pm');
-  sheet.getRange('B2:B').setNumberFormat('#,##0');
-  sheet.getRange('C2:C').setNumberFormat('0.000');
-  sheet.getRange('D2:D').setNumberFormat('0.0');
-  sheet.getRange('E2:E').setNumberFormat('$#,##0.00');
-  sheet.getRange('G2:G').setNumberFormat('#,##0');
-  sheet.getRange('H2:H').setNumberFormat('0.0');
-  sheet.getRange('I2:I').setNumberFormat('$0.000');
-
-  setupSummary_(ss);
+  ensureLayout_(sheet, true);
 
   if (!props.getProperty('FOLDER_ID') || !folderExists_(props.getProperty('FOLDER_ID'))) {
     var folder = Drive.Files.create({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' });
@@ -337,26 +328,23 @@ function rotateToken() {
 function setupSummary_(ss) {
   var sheet = ss.getSheetByName(SUMMARY_NAME) || ss.insertSheet(SUMMARY_NAME);
   var f = "'" + SHEET_NAME + "'!";
+  // [label, formula, number format]. Columns: B odometer, C litres, E total, H L/100 km, I MPG.
   var rows = [
-    ['Fill-ups', '=COUNT(' + f + 'B2:B)'],
-    ['Distance tracked (km)', '=IFERROR(MAX(' + f + 'B2:B)-MIN(' + f + 'B2:B),0)'],
-    ['Total spent', '=SUM(' + f + 'E2:E)'],
-    ['Total litres', '=SUM(' + f + 'C2:C)'],
-    ['Average ¢/L', '=IFERROR(SUM(' + f + 'E2:E)/SUM(' + f + 'C2:C)*100,"")'],
-    ['Average L/100 km', '=IFERROR(AVERAGE(' + f + 'H2:H),"")'],
-    ['Best L/100 km (lowest)', '=IFERROR(MIN(' + f + 'H2:H),"")'],
-    ['Worst L/100 km (highest)', '=IFERROR(MAX(' + f + 'H2:H),"")'],
-    ['Spent last 30 days', '=SUMIFS(' + f + 'E2:E,' + f + 'A2:A,">="&(TODAY()-30))'],
+    ['Fill-ups', '=COUNT(' + f + 'B2:B)', '0'],
+    ['Distance tracked (km)', '=IFERROR(MAX(' + f + 'B2:B)-MIN(' + f + 'B2:B),0)', '#,##0'],
+    ['Total spent', '=SUM(' + f + 'E2:E)', '$#,##0.00'],
+    ['Total litres', '=SUM(' + f + 'C2:C)', '#,##0.0'],
+    ['Average ¢/L', '=IFERROR(SUM(' + f + 'E2:E)/SUM(' + f + 'C2:C)*100,"")', '0.0'],
+    ['Average L/100 km', '=IFERROR(AVERAGE(' + f + 'H2:H),"")', '0.0'],
+    ['Best L/100 km (lowest)', '=IFERROR(MIN(' + f + 'H2:H),"")', '0.0'],
+    ['Worst L/100 km (highest)', '=IFERROR(MAX(' + f + 'H2:H),"")', '0.0'],
+    ['Average MPG (US)', '=IFERROR(AVERAGE(' + f + 'I2:I),"")', '0.0'],
+    ['Spent last 30 days', '=SUMIFS(' + f + 'E2:E,' + f + 'A2:A,">="&(TODAY()-30))', '$#,##0.00'],
   ];
   sheet.clear();
-  sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+  sheet.getRange(1, 1, rows.length, 2).setValues(rows.map(function (r) { return [r[0], r[1]]; }));
   sheet.getRange(1, 1, rows.length, 1).setFontWeight('bold');
-  sheet.getRange('B2').setNumberFormat('#,##0');
-  sheet.getRange('B3').setNumberFormat('$#,##0.00');
-  sheet.getRange('B4').setNumberFormat('#,##0.0');
-  sheet.getRange('B5').setNumberFormat('0.0');
-  sheet.getRange('B6:B8').setNumberFormat('0.0');
-  sheet.getRange('B9').setNumberFormat('$#,##0.00');
+  sheet.getRange(1, 2, rows.length, 1).setNumberFormats(rows.map(function (r) { return [r[2]]; }));
 
   sheet.getRange('D1').setValue('Spending by month').setFontWeight('bold');
   sheet.getRange('D2').setFormula(
@@ -371,13 +359,52 @@ function setupSummary_(ss) {
 // Sheet helpers
 // ---------------------------------------------------------------------------
 
-/** The bound sheet. With the currentonly scope this is the only sheet the script can open. */
+/**
+ * The bound sheet. With the currentonly scope this is the only sheet the script can
+ * open. Brings the column layout up to date first, so a sheet made by an older
+ * version (US units, or metric without the MPG column) is fixed the next time the
+ * app syncs, without having to run setup() again.
+ */
 function fillupsSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!ss) throw new Error('Script is not attached to a sheet. See README → Setup.');
   var sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error('Sheet "' + SHEET_NAME + '" not found. Run setup() first.');
+  ensureLayout_(sheet, false);
   return sheet;
+}
+
+var layoutChecked_ = false; // once per script run is enough
+
+/**
+ * Makes the header row, number formats and Summary tab match the current layout.
+ * An older 13-column layout gets an MPG column inserted after L/100 km, so the photo,
+ * notes and ID columns (and the data in them) move over with it; then every row's
+ * distance, L/100 km, MPG and $/km are recalculated. Does nothing if already current.
+ */
+function ensureLayout_(sheet, force) {
+  if (layoutChecked_ && !force) return;
+  layoutChecked_ = true;
+  var width = Math.max(sheet.getLastColumn(), 1);
+  var header = sheet.getRange(1, 1, 1, width).getValues()[0].map(String);
+  var current = HEADERS.every(function (h, i) { return header[i] === h; });
+  if (current && !force) return;
+
+  var hasData = sheet.getLastRow() > 1;
+  if (!current && width === OLD_LAYOUT_WIDTH && header[COL.mpg - 1] !== HEADERS[COL.mpg - 1]) {
+    sheet.insertColumnAfter(COL.economy);
+  }
+  sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  var formats = {
+    date: 'yyyy-mm-dd h:mm am/pm', odometer: '#,##0', litres: '0.000', cents: '0.0',
+    total: '$#,##0.00', distance: '#,##0', economy: '0.0', mpg: '0.0', perKm: '$0.000',
+  };
+  Object.keys(formats).forEach(function (k) {
+    sheet.getRange(2, COL[k], sheet.getMaxRows() - 1, 1).setNumberFormat(formats[k]);
+  });
+  setupSummary_(sheet.getParent());
+  if (hasData) recalculateAll();
 }
 
 function readEntries_(sheet) {
@@ -416,9 +443,9 @@ function recalculateAll() {
   if (!entries.length) return;
   var out = entries.map(function (e, i) {
     var s = computeStats_(entries.slice(0, i), e.odometer, e.litres, e.total, e.full);
-    return [s.distance, s.economy, s.perKm];
+    return [s.distance, s.economy, s.mpg, s.perKm];
   });
-  sheet.getRange(2, COL.distance, out.length, 3).setValues(out);
+  sheet.getRange(2, COL.distance, out.length, 4).setValues(out);
 }
 
 function sortByOdometer_(sheet) {
